@@ -1,79 +1,96 @@
 mod storage;
+mod buffer;
 
-use storage::disk_manager::DiskManager;
-use storage::page::Page;
+use buffer::buffer_pool::BufferPool;
 
 fn main() -> std::io::Result<()> {
-    let mut disk = DiskManager::new("database.db")?;
+    let db_path = "venom.db";
+    let _ = std::fs::remove_file(db_path); // fresh start
 
-    // --- Write some pages ---
-    println!("=== Writing pages ===");
+    // Pool with only 4 frames — tiny on purpose to show eviction working
+    let mut pool = BufferPool::new(4, db_path)?;
 
-    let page_id = disk.allocate_page();
-    let mut page = Page::new(page_id);
+    println!("=== Phase 2: Buffer Pool ===\n");
 
-    // Insert some tuples (raw bytes — we'll add schema in a later phase)
-    let rows = vec![
-        b"Ayush,21,CSE".as_ref(),
-        b"Faism,22,ECE".as_ref(),
-        b"Alice,20,EEE".as_ref(),
-    ];
+    // --- Test 1: Create pages and insert tuples ---
+    println!("--- Test 1: Insert tuples via buffer pool ---");
 
-    for row in &rows {
-        match page.insert_tuple(row) {
-            Some(slot_id) => println!("Inserted into slot {}: {:?}", slot_id, std::str::from_utf8(row).unwrap()),
-            None => println!("Page full!"),
+    let mut page_ids = Vec::new();
+
+    for i in 0..4 {
+        let (page_id, frame_id) = pool.new_page()?;
+        {
+            let page = pool.get_page_mut(frame_id).unwrap();
+            let row = format!("row_from_page_{}", i);
+            page.insert_tuple(row.as_bytes());
         }
+        pool.unpin(frame_id, true); // dirty = true, we modified it
+        page_ids.push(page_id);
+        println!("Created page {} with one tuple", page_id);
     }
 
-    println!("Free space remaining: {} bytes", page.free_space());
-    disk.write_page(&mut page)?;
-    println!("Page {} written to disk.\n", page_id);
+    pool.flush_all()?;
+    println!("All pages flushed to disk.\n");
 
-    // --- Read back from disk ---
-    println!("=== Reading page back from disk ===");
-    let loaded = disk.read_page(page_id)?;
-    println!("Checksum verified ✓");
-    println!("Slots on page: {}", loaded.num_slots());
+    // --- Test 2: Fetch pages back (should be cache hits) ---
+    println!("--- Test 2: Fetch pages (expect cache hits) ---");
 
-    for slot_id in 0..loaded.num_slots() {
-        match loaded.get_tuple(slot_id) {
-            Some(data) => println!("Slot {}: {}", slot_id, std::str::from_utf8(data).unwrap()),
-            None => println!("Slot {}: (deleted)", slot_id),
-        }
+    for &pid in &page_ids {
+        let frame_id = pool.fetch_page(pid)?;
+        let data = pool.get_page(frame_id)
+            .unwrap()
+            .get_tuple(0)
+            .unwrap()
+            .to_vec();
+        pool.unpin(frame_id, false);
+        println!("Page {}: \"{}\"", pid, std::str::from_utf8(&data).unwrap());
     }
 
-    // --- Test delete ---
-    println!("\n=== Testing delete ===");
-    let mut page2 = disk.read_page(page_id)?;
-    page2.delete_tuple(1); // delete "Faism"
-    disk.write_page(&mut page2)?;
+    println!("\nHit rate after fetches: {:.1}%", pool.hit_rate());
 
-    let page3 = disk.read_page(page_id)?;
-    for slot_id in 0..page3.num_slots() {
-        match page3.get_tuple(slot_id) {
-            Some(data) => println!("Slot {}: {}", slot_id, std::str::from_utf8(data).unwrap()),
-            None => println!("Slot {}: (deleted)", slot_id),
-        }
+    // --- Test 3: Force eviction (pool has 4 frames, add a 5th page) ---
+    println!("\n--- Test 3: Force LRU eviction ---");
+    println!("Pool size: 4 frames, creating 5th page → must evict LRU");
+
+    let (pid5, fid5) = pool.new_page()?;
+    {
+        let page = pool.get_page_mut(fid5).unwrap();
+        page.insert_tuple(b"i caused an eviction");
     }
+    pool.unpin(fid5, true);
 
-    // --- Stress test: fill a page ---
-    println!("\n=== Stress test: filling a page ===");
-    let pid2 = disk.allocate_page();
-    let mut big_page = Page::new(pid2);
-    let mut count = 0u32;
+    println!("5th page created (page {}), LRU page was evicted to disk", pid5);
+    println!("Misses so far: {}", pool.misses);
 
-    loop {
-        let row = format!("row_{:08}", count);
-        match big_page.insert_tuple(row.as_bytes()) {
-            Some(_) => count += 1,
-            None => break,
-        }
-    }
+    // --- Test 4: Access evicted page — must reload from disk ---
+    println!("\n--- Test 4: Access evicted page (expect disk reload) ---");
 
-    disk.write_page(&mut big_page)?;
-    println!("Inserted {} rows before page was full", count);
-    println!("Free space after fill: {} bytes", big_page.free_space());
+    let misses_before = pool.misses;
+    let frame_id = pool.fetch_page(page_ids[0])?;
+    let data = pool.get_page(frame_id)
+        .unwrap()
+        .get_tuple(0)
+        .unwrap()
+        .to_vec();
+    pool.unpin(frame_id, false);
+
+    let reloaded_from_disk = pool.misses > misses_before;
+    println!(
+        "Page {}: \"{}\" (reloaded from disk: {})",
+        page_ids[0],
+        std::str::from_utf8(&data).unwrap(),
+        reloaded_from_disk
+    );
+
+    // --- Final stats ---
+    println!("\n=== Buffer Pool Stats ===");
+    println!("Total hits:   {}", pool.hits);
+    println!("Total misses: {}", pool.misses);
+    println!("Hit rate:     {:.1}%", pool.hit_rate());
+    println!("Pool size:    {} frames", pool.pool_size());
+
+    pool.flush_all()?;
+    println!("\nAll dirty pages flushed. Done.");
 
     Ok(())
 }
