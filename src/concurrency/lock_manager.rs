@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
 use super::transaction::Rid;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Lock mode — Shared (read) or Exclusive (write)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +30,7 @@ impl LockQueue {
         for r in &self.requests {
             if r.granted {
                 match r.mode {
-                    LockMode::Shared    => shared += 1,
+                    LockMode::Shared => shared += 1,
                     LockMode::Exclusive => exclusive += 1,
                 }
             }
@@ -43,17 +43,23 @@ impl LockQueue {
         let (shared, exclusive) = self.granted_counts();
 
         // If this txn already holds a compatible lock, upgrade is possible
-        let already_holds_exclusive = self.requests.iter()
+        let already_holds_exclusive = self
+            .requests
+            .iter()
             .any(|r| r.txn_id == txn_id && r.granted && r.mode == LockMode::Exclusive);
 
-        if already_holds_exclusive { return true; }
+        if already_holds_exclusive {
+            return true;
+        }
 
         match mode {
             // Shared lock: ok if no exclusive lock held by anyone else
             LockMode::Shared => exclusive == 0,
             // Exclusive lock: ok if no other locks held at all
             LockMode::Exclusive => {
-                let others_hold = self.requests.iter()
+                let others_hold = self
+                    .requests
+                    .iter()
                     .any(|r| r.granted && r.txn_id != txn_id);
                 !others_hold
             }
@@ -88,25 +94,30 @@ impl LockManager {
     ///   Ok(true)  — lock granted immediately
     ///   Ok(false) — lock queued (txn must wait)
     ///   Err(...)  — deadlock detected, caller must abort
-    pub fn acquire(
-        &mut self,
-        txn_id: u32,
-        rid: Rid,
-        mode: LockMode,
-    ) -> Result<bool, String> {
+    pub fn acquire(&mut self, txn_id: u32, rid: Rid, mode: LockMode) -> Result<bool, String> {
         let queue = self.lock_table.entry(rid).or_default();
 
         // Already holds this lock?
-        if queue.requests.iter().any(|r| r.txn_id == txn_id && r.granted) {
+        if queue
+            .requests
+            .iter()
+            .any(|r| r.txn_id == txn_id && r.granted)
+        {
             // Upgrade: if we hold Shared and want Exclusive
             if mode == LockMode::Exclusive {
-                let holds_exclusive = queue.requests.iter()
+                let holds_exclusive = queue
+                    .requests
+                    .iter()
                     .any(|r| r.txn_id == txn_id && r.granted && r.mode == LockMode::Exclusive);
-                if holds_exclusive { return Ok(true); }
+                if holds_exclusive {
+                    return Ok(true);
+                }
                 // Try upgrade
                 if queue.can_grant(txn_id, &LockMode::Exclusive) {
                     for r in queue.requests.iter_mut() {
-                        if r.txn_id == txn_id { r.mode = LockMode::Exclusive; }
+                        if r.txn_id == txn_id {
+                            r.mode = LockMode::Exclusive;
+                        }
                     }
                     return Ok(true);
                 }
@@ -125,7 +136,9 @@ impl LockManager {
 
         if !can_grant {
             // Record who we're waiting for (for deadlock detection)
-            let blockers: HashSet<u32> = queue.requests.iter()
+            let blockers: HashSet<u32> = queue
+                .requests
+                .iter()
                 .filter(|r| r.granted && r.txn_id != txn_id)
                 .map(|r| r.txn_id)
                 .collect();
@@ -139,7 +152,8 @@ impl LockManager {
                 q.requests.retain(|r| !(r.txn_id == txn_id && !r.granted));
                 self.waits_for.remove(&txn_id);
                 return Err(format!(
-                    "deadlock detected: txn {} is in a wait cycle", txn_id
+                    "deadlock detected: txn {} is in a wait cycle",
+                    txn_id
                 ));
             }
         }
@@ -173,17 +187,37 @@ impl LockManager {
             None => return,
         };
 
+        // Compute current granted counts BEFORE iterating mutably.
+        let mut shared = queue
+            .requests
+            .iter()
+            .filter(|r| r.granted && matches!(r.mode, LockMode::Shared))
+            .count();
+
+        let mut exclusive = queue
+            .requests
+            .iter()
+            .filter(|r| r.granted && matches!(r.mode, LockMode::Exclusive))
+            .count();
+
         for req in queue.requests.iter_mut() {
-            if req.granted { continue; }
-            let (shared, exclusive) = queue.granted_counts();
+            if req.granted {
+                continue;
+            }
+
             let can = match req.mode {
-                LockMode::Shared    => exclusive == 0,
+                LockMode::Shared => exclusive == 0,
                 LockMode::Exclusive => shared == 0 && exclusive == 0,
             };
+
             if can {
                 req.granted = true;
-                // Remove from waits-for now that it's granted
-                // (we can't mutate waits_for here, done at call site)
+
+                // Update counts because this request is now granted.
+                match req.mode {
+                    LockMode::Shared => shared += 1,
+                    LockMode::Exclusive => exclusive += 1,
+                }
             }
         }
     }
@@ -210,16 +244,19 @@ impl LockManager {
     pub fn holds_lock(&self, txn_id: u32, rid: Rid, mode: &LockMode) -> bool {
         self.lock_table.get(&rid).map_or(false, |q| {
             q.requests.iter().any(|r| {
-                r.txn_id == txn_id && r.granted && (
-                    r.mode == *mode ||
-                    r.mode == LockMode::Exclusive // X covers both
-                )
+                r.txn_id == txn_id
+                    && r.granted
+                    && (
+                        r.mode == *mode || r.mode == LockMode::Exclusive
+                        // X covers both
+                    )
             })
         })
     }
 
     pub fn lock_count(&self) -> usize {
-        self.lock_table.values()
+        self.lock_table
+            .values()
             .map(|q| q.requests.iter().filter(|r| r.granted).count())
             .sum()
     }
@@ -229,49 +266,54 @@ impl LockManager {
 mod tests {
     use super::*;
 
-    fn rid(p: u32, s: u16) -> Rid { Rid { page_id: p, slot_id: s } }
+    fn rid(p: u32, s: u16) -> Rid {
+        Rid {
+            page_id: p,
+            slot_id: s,
+        }
+    }
 
     #[test]
     fn test_shared_locks_compatible() {
         let mut lm = LockManager::new();
         // Two txns can both hold shared locks
-        assert!(lm.acquire(1, rid(0,0), LockMode::Shared).unwrap());
-        assert!(lm.acquire(2, rid(0,0), LockMode::Shared).unwrap());
+        assert!(lm.acquire(1, rid(0, 0), LockMode::Shared).unwrap());
+        assert!(lm.acquire(2, rid(0, 0), LockMode::Shared).unwrap());
     }
 
     #[test]
     fn test_exclusive_blocks_shared() {
         let mut lm = LockManager::new();
         // txn 1 holds exclusive
-        assert!(lm.acquire(1, rid(0,0), LockMode::Exclusive).unwrap());
+        assert!(lm.acquire(1, rid(0, 0), LockMode::Exclusive).unwrap());
         // txn 2 wants shared — must wait
-        let result = lm.acquire(2, rid(0,0), LockMode::Shared).unwrap();
+        let result = lm.acquire(2, rid(0, 0), LockMode::Shared).unwrap();
         assert!(!result); // queued, not granted
     }
 
     #[test]
     fn test_release_grants_waiting() {
         let mut lm = LockManager::new();
-        assert!(lm.acquire(1, rid(0,0), LockMode::Exclusive).unwrap());
+        assert!(lm.acquire(1, rid(0, 0), LockMode::Exclusive).unwrap());
         // txn 2 queued
-        lm.acquire(2, rid(0,0), LockMode::Shared).unwrap();
+        lm.acquire(2, rid(0, 0), LockMode::Shared).unwrap();
         // txn 1 releases
         lm.release_all(1);
         // txn 2 should now be granted
-        assert!(lm.holds_lock(2, rid(0,0), &LockMode::Shared));
+        assert!(lm.holds_lock(2, rid(0, 0), &LockMode::Shared));
     }
 
     #[test]
     fn test_deadlock_detection() {
         let mut lm = LockManager::new();
         // txn 1 holds lock on row A
-        lm.acquire(1, rid(0,0), LockMode::Exclusive).unwrap();
+        lm.acquire(1, rid(0, 0), LockMode::Exclusive).unwrap();
         // txn 2 holds lock on row B
-        lm.acquire(2, rid(0,1), LockMode::Exclusive).unwrap();
+        lm.acquire(2, rid(0, 1), LockMode::Exclusive).unwrap();
         // txn 1 waits for row B
-        lm.acquire(1, rid(0,1), LockMode::Exclusive).unwrap();
+        lm.acquire(1, rid(0, 1), LockMode::Exclusive).unwrap();
         // txn 2 waits for row A — deadlock!
-        let result = lm.acquire(2, rid(0,0), LockMode::Exclusive);
+        let result = lm.acquire(2, rid(0, 0), LockMode::Exclusive);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("deadlock"));
     }
@@ -280,15 +322,15 @@ mod tests {
     fn test_multiple_independent_rows() {
         let mut lm = LockManager::new();
         // Different rows — no conflict
-        assert!(lm.acquire(1, rid(0,0), LockMode::Exclusive).unwrap());
-        assert!(lm.acquire(2, rid(0,1), LockMode::Exclusive).unwrap());
-        assert!(lm.acquire(3, rid(1,0), LockMode::Shared).unwrap());
+        assert!(lm.acquire(1, rid(0, 0), LockMode::Exclusive).unwrap());
+        assert!(lm.acquire(2, rid(0, 1), LockMode::Exclusive).unwrap());
+        assert!(lm.acquire(3, rid(1, 0), LockMode::Shared).unwrap());
     }
 
     #[test]
     fn test_release_clears_locks() {
         let mut lm = LockManager::new();
-        lm.acquire(1, rid(0,0), LockMode::Exclusive).unwrap();
+        lm.acquire(1, rid(0, 0), LockMode::Exclusive).unwrap();
         assert_eq!(lm.lock_count(), 1);
         lm.release_all(1);
         assert_eq!(lm.lock_count(), 0);
@@ -298,8 +340,8 @@ mod tests {
     fn test_txn_can_reacquire_own_lock() {
         let mut lm = LockManager::new();
         // Same txn acquiring same lock twice is idempotent
-        assert!(lm.acquire(1, rid(0,0), LockMode::Shared).unwrap());
-        assert!(lm.acquire(1, rid(0,0), LockMode::Shared).unwrap());
+        assert!(lm.acquire(1, rid(0, 0), LockMode::Shared).unwrap());
+        assert!(lm.acquire(1, rid(0, 0), LockMode::Shared).unwrap());
         assert_eq!(lm.lock_count(), 1);
     }
 }
