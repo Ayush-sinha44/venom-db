@@ -1,1 +1,17 @@
+# Build artifacts
 /target
+
+# Rust
+Cargo.lock
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
