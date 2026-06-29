@@ -8,83 +8,13 @@ mod concurrency;
 
 use std::sync::{Arc, Mutex};
 use std::thread;
+
 use concurrency::lock_manager::{LockManager, LockMode};
-use concurrency::transaction::{Transaction, TxnState, Rid, UndoOp};
+use concurrency::transaction::{Rid as TxnRid};
 use sql::lexer::Lexer;
 use sql::parser::Parser;
 use engine::executor::{Executor, Row};
-use engine::catalog::Schema;
-use sql::ast::Value;
 use std::io::{self, Write};
-
-// ── Transactional Executor ───────────────────────────────────────────────────
-
-/// Wraps the Executor with a LockManager to add transactional semantics.
-struct TxnExecutor {
-    exec: Executor,
-    lock_manager: LockManager,
-    next_txn_id: u32,
-    active_txns: std::collections::HashMap<u32, Transaction>,
-}
-
-impl TxnExecutor {
-    fn new() -> Self {
-        Self {
-            exec: Executor::new(),
-            lock_manager: LockManager::new(),
-            next_txn_id: 1,
-            active_txns: std::collections::HashMap::new(),
-        }
-    }
-
-    fn begin(&mut self) -> u32 {
-        let id = self.next_txn_id;
-        self.next_txn_id += 1;
-        self.active_txns.insert(id, Transaction::new(id));
-        id
-    }
-
-    fn commit(&mut self, txn_id: u32) -> Result<(), String> {
-        let txn = self.active_txns.get_mut(&txn_id)
-            .ok_or("txn not found")?;
-        txn.commit();
-        self.lock_manager.release_all(txn_id);
-        self.active_txns.remove(&txn_id);
-        Ok(())
-    }
-
-    fn abort(&mut self, txn_id: u32) -> Result<(), String> {
-        let txn = self.active_txns.remove(&txn_id)
-            .ok_or("txn not found")?;
-
-        // Undo in reverse order
-        for entry in txn.undo_log.iter().rev() {
-            match &entry.operation {
-                UndoOp::Insert => {
-                    // find and delete the row from executor pages
-                }
-                UndoOp::Delete { data: _ } => {
-                    // re-insert old data
-                }
-            }
-        }
-
-        self.lock_manager.release_all(txn_id);
-        Ok(())
-    }
-
-    fn run_in_txn(&mut self, txn_id: u32, sql: &str) -> Result<Vec<Row>, String> {
-        if !self.active_txns.contains_key(&txn_id) {
-            return Err(format!("txn {} not active", txn_id));
-        }
-
-        let mut lexer = Lexer::new(sql.trim().trim_end_matches(';'));
-        let tokens = lexer.tokenize()?;
-        let mut parser = Parser::new(tokens);
-        let stmt = parser.parse()?;
-        self.exec.execute(stmt)
-    }
-}
 
 // ── REPL helpers ─────────────────────────────────────────────────────────────
 
@@ -100,11 +30,9 @@ fn run(exec: &mut Executor, sql: &str) -> Result<Vec<Row>, String> {
 
 fn print_results(rows: &[Row], exec: &Executor, table: Option<&str>) {
     if rows.is_empty() { println!("(no rows)"); return; }
-
     let headers: Option<Vec<String>> = table.and_then(|t| {
         exec.catalog.get(t).map(|s| s.columns.iter().map(|c| c.name.clone()).collect())
     });
-
     if let Some(ref cols) = headers {
         let widths: Vec<usize> = cols.iter().enumerate().map(|(i, col)| {
             let max_val = rows.iter()
@@ -112,7 +40,6 @@ fn print_results(rows: &[Row], exec: &Executor, table: Option<&str>) {
                 .max().unwrap_or(0);
             col.len().max(max_val)
         }).collect();
-
         let header: Vec<String> = cols.iter().enumerate()
             .map(|(i, c)| format!("{:width$}", c, width = widths[i])).collect();
         println!(" {} ", header.join(" │ "));
@@ -146,17 +73,16 @@ fn extract_table(sql: &str) -> Option<&str> {
 }
 
 fn print_help() {
-    println!("\n  venom-db SQL shell  (Phase 6: Transactions)");
+    println!("\n  venom-db SQL shell  (v0.7 — Persistent)");
     println!("  ──────────────────────────────────────────────");
     println!("  SQL:  CREATE TABLE t (col TYPE, ...)");
     println!("        INSERT INTO t VALUES (v1, v2, ...)");
     println!("        SELECT [* | col,...] FROM t [WHERE col op val]");
     println!("        DELETE FROM t [WHERE col op val]");
-    println!("        BEGIN                 -- start a transaction");
-    println!("        COMMIT                -- commit current txn");
-    println!("        ROLLBACK              -- abort current txn");
+    println!("        BEGIN / COMMIT / ROLLBACK");
     println!("  Ops:  =  !=  <  >  <=  >=");
-    println!("  \\tables  \\help  \\quit\n");
+    println!("  Meta: \\tables  \\stats  \\help  \\quit");
+    println!("  Data: stored in ./venom-data/ (survives restart)\n");
 }
 
 fn looks_complete(line: &str) -> bool {
@@ -171,14 +97,10 @@ fn looks_complete(line: &str) -> bool {
 
 fn run_concurrency_demo() {
     println!("\n━━━ Concurrency Demo ━━━\n");
-
     let lm = Arc::new(Mutex::new(LockManager::new()));
-
-    // Simulate two transactions competing for the same row
     let lm1 = Arc::clone(&lm);
     let lm2 = Arc::clone(&lm);
-
-    let row = Rid { page_id: 0, slot_id: 0 };
+    let row = TxnRid { page_id: 0, slot_id: 0 };
 
     let t1 = thread::spawn(move || {
         let mut lm = lm1.lock().unwrap();
@@ -187,7 +109,6 @@ fn run_concurrency_demo() {
             Ok(false) => println!("  txn 1: waiting for lock on row (0,0)..."),
             Err(e)    => println!("  txn 1: deadlock → {}", e),
         }
-        // Simulate some work
         drop(lm);
         thread::sleep(std::time::Duration::from_millis(10));
         let mut lm = lm1.lock().unwrap();
@@ -209,12 +130,10 @@ fn run_concurrency_demo() {
     t1.join().unwrap();
     t2.join().unwrap();
 
-    // Deadlock demo
     println!("\n  --- Deadlock Detection ---");
     let mut lm = LockManager::new();
-    let row_a = Rid { page_id: 0, slot_id: 0 };
-    let row_b = Rid { page_id: 0, slot_id: 1 };
-
+    let row_a = TxnRid { page_id: 0, slot_id: 0 };
+    let row_b = TxnRid { page_id: 0, slot_id: 1 };
     lm.acquire(1, row_a, LockMode::Exclusive).unwrap();
     println!("  txn 1: locked row A");
     lm.acquire(2, row_b, LockMode::Exclusive).unwrap();
@@ -232,19 +151,47 @@ fn run_concurrency_demo() {
 // ── main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
+    let data_dir = "./venom-data";
+
     println!("╔══════════════════════════════════════════╗");
-    println!("║           venom-db  v0.6                 ║");
-    println!("║  Transactions + Concurrency Control      ║");
-    println!("║  type \\help for usage, \\quit to exit     ║");
+    println!("║           venom-db  v0.7                 ║");
+    println!("║   Persistent Storage + WAL Recovery      ║");
+    println!("║   type \\help for usage, \\quit to exit    ║");
     println!("╚══════════════════════════════════════════╝");
+
+    // Open database — creates data dir if it doesn't exist
+    let mut exec = match Executor::open(data_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Failed to open database: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Run WAL recovery before accepting queries
+    match exec.recover() {
+        Ok(info) => {
+            if info.tables_loaded > 0 || info.redone > 0 {
+                println!("\n  Recovery complete:");
+                println!("    tables loaded : {}", info.tables_loaded);
+                println!("    WAL records redone : {}", info.redone);
+                println!("    WAL records undone : {}", info.undone);
+            } else {
+                println!("\n  Fresh database — no data to recover.");
+            }
+        }
+        Err(e) => {
+            eprintln!("Recovery failed: {}", e);
+            std::process::exit(1);
+        }
+    }
 
     run_concurrency_demo();
 
     println!("\n━━━ Interactive SQL Shell ━━━");
-    println!("  BEGIN/COMMIT/ROLLBACK supported.");
-    println!("  Without BEGIN, each statement is auto-committed.\n");
+    println!("  Data directory: {}", data_dir);
+    println!("  All changes are durable — data survives \\quit and restart.\n");
 
-    let mut exec = Executor::new();
     let mut lm = LockManager::new();
     let mut current_txn: Option<u32> = None;
     let mut next_txn_id: u32 = 1;
@@ -275,9 +222,13 @@ fn main() {
             "\\QUIT" | "\\Q" | "EXIT" | "QUIT" => { println!("bye."); break; }
             "\\HELP" | "\\H" => { print_help(); continue; }
             "\\TABLES" => {
-                let tables: Vec<&str> = exec.catalog.tables.keys().map(|s| s.as_str()).collect();
+                let tables: Vec<String> = exec.catalog.tables.keys().cloned().collect();
                 if tables.is_empty() { println!("  (no tables)"); }
                 else { for t in tables { println!("  {}", t); } }
+                continue;
+            }
+            "\\STATS" => {
+                println!("  buffer pool hit rate: {:.1}%", exec.hit_rate());
                 continue;
             }
             _ => {}
@@ -327,13 +278,12 @@ fn main() {
 
         let table_hint = extract_table(&sql).map(|s| s.to_string());
 
-        // Acquire appropriate lock if in a transaction
+        // Acquire lock if in explicit transaction
         if let Some(txn_id) = current_txn {
             let is_write = sql.to_uppercase().starts_with("INSERT")
                 || sql.to_uppercase().starts_with("DELETE");
             let mode = if is_write { LockMode::Exclusive } else { LockMode::Shared };
-            // Table-level lock (simplified — real DBs use row-level)
-            let table_rid = Rid { page_id: u32::MAX, slot_id: 0 }; // sentinel for table lock
+            let table_rid = TxnRid { page_id: u32::MAX, slot_id: 0 };
             match lm.acquire(txn_id, table_rid, mode) {
                 Ok(true)  => {}
                 Ok(false) => { println!("  waiting for lock..."); }
