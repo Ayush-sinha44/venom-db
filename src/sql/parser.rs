@@ -220,6 +220,25 @@ mod tests {
             assert_eq!(columns[1].ty, DataType::Text);
         }
     }
+    #[test]
+    fn test_parse_update() {
+        let sql = "UPDATE users SET age = 31 WHERE id = 1";
+         let mut l = Lexer::new(sql);
+         let tokens = l.tokenize().unwrap();
+         let mut p = Parser::new(tokens);
+        let stmt = p.parse().unwrap();
+
+        match stmt {
+             Statement::Update { table, assignments, filter } => {
+                 assert_eq!(table, "users");
+                assert_eq!(assignments.len(), 1);
+                assert_eq!(assignments[0].column, "age");
+                assert_eq!(assignments[0].value, Value::Int(31));
+                 assert!(filter.is_some());
+        }
+        _ => panic!("expected Update"),
+    }
+}
 
     #[test]
     fn test_parse_insert() {
