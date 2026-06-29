@@ -132,6 +132,9 @@ impl Executor {
             Statement::Delete { table, filter } => {
                 self.exec_delete(table, filter)
             }
+            Statement::Update {..} => {
+                Err("Update not yet implemented".to_string())
+            }
         }
     }
 
