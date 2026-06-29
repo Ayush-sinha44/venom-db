@@ -173,27 +173,35 @@ impl Parser {
         Ok(Expr { left, op, right })
     }
     fn parse_update(&mut self) -> Result<Statement, String> {
-    let table = self.expect_ident()?;
-    self.expect(Token::Set)?;
+       self.expect(&Token::Update)?;
+      let table = self.expect_ident()?;
+      self.expect(&Token::Set)?;
 
-    let mut assignments = Vec::new();
-    loop {
+      let mut assignments = Vec::new();
+      loop {
         let column = self.expect_ident()?;
-        self.expect(Token::Eq)?;
-        let value = self.parse_value()?;
+        self.expect(&Token::Eq)?;
+        let value = match self.advance().clone() {
+            Token::IntLit(n)  => Value::Int(n),
+            Token::TextLit(s) => Value::Text(s),
+            t => return Err(format!("expected value, got {:?}", t)),
+        };
         assignments.push(Assignment { column, value });
-        if !self.peek_is(Token::Comma) { break; }
-        self.advance(); // consume comma
-    }
 
-    let filter = if self.peek_is(Token::Where) {
+        match self.peek() {
+            Token::Comma => { self.advance(); }
+            _            => break,
+        }
+      }
+
+      let filter = if self.peek() == &Token::Where {
         self.advance();
         Some(self.parse_expr()?)
-    } else {
+      } else {
         None
-    };
+       };
 
-        Ok(Statement::Update { table, assignments, filter })
+       Ok(Statement::Update { table, assignments, filter })
     }
 }
 
