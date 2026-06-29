@@ -16,6 +16,11 @@ pub enum Statement {
         table: String,
         values: Vec<Value>,
     },
+    Update{
+        table:String,
+        assignments:Vec<Assignement>,
+        filter:Option<Expr>,
+    },
     Select {
         table: String,
         columns: SelectColumns,
@@ -67,6 +72,11 @@ pub struct Expr {
     pub left: String,   // column name
     pub op: Op,
     pub right: Value,   // literal
+}
+#[derive(Debug,Clone,PartialEq)]
+pub struct Assignment{
+    pub column:String,
+    pub value:value,
 }
 
 #[derive(Debug, Clone, PartialEq)]
