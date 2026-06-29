@@ -18,7 +18,9 @@ impl Parser {
             Token::Insert => self.parse_insert(),
             Token::Select => self.parse_select(),
             Token::Delete => self.parse_delete(),
+            Token::Update => self.parse_update(),
             t => Err(format!("unexpected token: {:?}", t)),
+
         }
     }
 
@@ -169,6 +171,29 @@ impl Parser {
             t => return Err(format!("expected value, got {:?}", t)),
         };
         Ok(Expr { left, op, right })
+    }
+    fn parse_update(&mut self) -> Result<Statement, String> {
+    let table = self.expect_ident()?;
+    self.expect(Token::Set)?;
+
+    let mut assignments = Vec::new();
+    loop {
+        let column = self.expect_ident()?;
+        self.expect(Token::Eq)?;
+        let value = self.parse_value()?;
+        assignments.push(Assignment { column, value });
+        if !self.peek_is(Token::Comma) { break; }
+        self.advance(); // consume comma
+    }
+
+    let filter = if self.peek_is(Token::Where) {
+        self.advance();
+        Some(self.parse_expr()?)
+    } else {
+        None
+    };
+
+        Ok(Statement::Update { table, assignments, filter })
     }
 }
 
