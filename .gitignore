@@ -1,6 +1,6 @@
 # Build artifacts
 /target
-
+/venom-data
 
 
 # Database files
