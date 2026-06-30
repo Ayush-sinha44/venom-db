@@ -386,6 +386,39 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         Ok(())
     }
+    #[test]
+    fn test_update_redo_on_restart() -> std::io::Result<()> {
+        let path = temp("update_redo");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut wal = WalManager::new(&path)?;
+            let t = wal.begin_txn()?;
+            wal.log_insert(t, 0, b"original data here....")?;
+            wal.commit(t)?;
+
+            let t2 = wal.begin_txn()?;
+            // old_data must match the actual length for update_tuple to work
+            wal.log_update(
+                t2,
+                0,
+                0,
+                b"original data here....",
+                b"updated data here.....",
+            )?;
+            wal.commit(t2)?;
+        }
+        {
+            let mut wal = WalManager::new(&path)?;
+            let report = wal.recover()?;
+            assert_eq!(report.redone, 2); // 1 insert + 1 update
+            assert_eq!(
+                wal.pages[&0].get_tuple(0).unwrap(),
+                b"updated data here....."
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
 
     #[test]
     fn test_mixed_committed_and_crashed() -> std::io::Result<()> {
