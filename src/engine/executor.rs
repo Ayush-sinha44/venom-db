@@ -521,7 +521,7 @@ impl Executor {
                         .map_err(|e| format!("wal abort: {}", e))?;
                     return Err(format!(
                         "UPDATE failed: new value for row is larger than original \
-                     (in-place update only supported for same-size or smaller values)"
+         (in-place update only supported for same-size or smaller values)"
                     ));
                 }
 
