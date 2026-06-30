@@ -921,6 +921,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
+    #[test]
     fn test_update_multiple_columns() {
         let dir = tmp_dir("update_multicol");
         let mut e = open_fresh(&dir);
@@ -929,11 +930,11 @@ mod tests {
 
         run(
             &mut e,
-            "UPDATE users SET age = 31, name = 'Alicia' WHERE id = 1",
+            "UPDATE users SET age = 31, name = 'Alica' WHERE id = 1",
         );
 
         let rows = run(&mut e, "SELECT * FROM users WHERE id = 1");
-        assert_eq!(rows[0][1], Value::Text("Alicia".into()));
+        assert_eq!(rows[0][1], Value::Text("Alica".into()));
         assert_eq!(rows[0][2], Value::Int(31));
 
         let _ = std::fs::remove_dir_all(&dir);
