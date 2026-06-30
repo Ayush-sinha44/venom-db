@@ -720,6 +720,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
+    fn test_update_survives_buffer_pool_pressure() {
+        let dir = tmp_dir("update_pressure");
+
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val INT)");
+
+        // Insert enough rows to span multiple pages, forcing buffer pool churn
+        for i in 0..50 {
+            run(&mut e, &format!("INSERT INTO t VALUES ({}, {})", i, i * 10));
+        }
+
+        run(&mut e, "UPDATE t SET val = 9999 WHERE id = 25");
+
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 25");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], Value::Int(9999));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
     fn test_update_basic() {
         let dir = tmp_dir("update");
 
