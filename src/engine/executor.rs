@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use crate::sql::ast::*;
-use crate::storage::page::Page;
+use super::catalog::{Catalog, Schema};
 use crate::buffer::buffer_pool::BufferPool;
 use crate::recovery::wal::WalManager;
+use crate::sql::ast::*;
 use crate::storage::catalog_store::CatalogStore;
-use super::catalog::{Catalog, Schema};
+use crate::storage::page::Page;
+use std::collections::HashMap;
 
 /// A row returned from a query
 pub type Row = Vec<Value>;
@@ -46,11 +46,11 @@ impl Executor {
     pub fn open(data_dir: &str) -> std::io::Result<Self> {
         std::fs::create_dir_all(data_dir)?;
 
-        let db_path      = format!("{}/data.db",    data_dir);
-        let wal_path     = format!("{}/venom.wal",  data_dir);
+        let db_path = format!("{}/data.db", data_dir);
+        let wal_path = format!("{}/venom.wal", data_dir);
 
-        let buffer_pool  = BufferPool::new(64, &db_path)?;
-        let wal          = WalManager::new(&wal_path)?;
+        let buffer_pool = BufferPool::new(64, &db_path)?;
+        let wal = WalManager::new(&wal_path)?;
         let catalog_store = CatalogStore::new(data_dir);
 
         Ok(Self {
@@ -120,33 +120,36 @@ impl Executor {
     /// Execute a SQL statement. Returns rows for SELECT, empty vec otherwise.
     pub fn execute(&mut self, stmt: Statement) -> Result<Vec<Row>, String> {
         match stmt {
-            Statement::CreateTable { table, columns } => {
-                self.exec_create_table(table, columns)
-            }
-            Statement::Insert { table, values } => {
-                self.exec_insert(table, values)
-            }
-            Statement::Select { table, columns, filter } => {
-                self.exec_select(table, columns, filter)
-            }
-            Statement::Delete { table, filter } => {
-                self.exec_delete(table, filter)
-            }
-            Statement::Update {table,assignments,filter} => {
-                self.exec
-            }
+            Statement::CreateTable { table, columns } => self.exec_create_table(table, columns),
+            Statement::Insert { table, values } => self.exec_insert(table, values),
+            Statement::Select {
+                table,
+                columns,
+                filter,
+            } => self.exec_select(table, columns, filter),
+            Statement::Delete { table, filter } => self.exec_delete(table, filter),
+            Statement::Update {
+                table,
+                assignments,
+                filter,
+            } => self.exec_update(table, assignments, filter),
         }
     }
 
     // ─── CREATE TABLE ────────────────────────────────────────────────────────
 
-    fn exec_create_table(&mut self, table: String, columns: Vec<ColumnDef>) -> Result<Vec<Row>, String> {
+    fn exec_create_table(
+        &mut self,
+        table: String,
+        columns: Vec<ColumnDef>,
+    ) -> Result<Vec<Row>, String> {
         let schema = Schema::new(table.clone(), columns);
         self.catalog.create_table(schema)?;
         self.table_pages.insert(table.clone(), TableMeta::default());
 
         // Persist catalog and empty page list immediately
-        self.catalog_store.save(&self.catalog)
+        self.catalog_store
+            .save(&self.catalog)
             .map_err(|e| format!("catalog save failed: {}", e))?;
         self.save_table_meta(&table)
             .map_err(|e| format!("table meta save failed: {}", e))?;
@@ -157,18 +160,24 @@ impl Executor {
     // ─── INSERT ──────────────────────────────────────────────────────────────
 
     fn exec_insert(&mut self, table: String, values: Vec<Value>) -> Result<Vec<Row>, String> {
-        let schema = self.catalog.get(&table)
+        let schema = self
+            .catalog
+            .get(&table)
             .ok_or_else(|| format!("table '{}' not found", table))?
             .clone();
 
         let row_bytes = schema.serialize_row(&values)?;
 
         // WAL: begin → insert → commit (auto-commit per statement)
-        let txn_id = self.wal.begin_txn()
+        let txn_id = self
+            .wal
+            .begin_txn()
             .map_err(|e| format!("wal begin failed: {}", e))?;
 
         // Find a page with space or allocate a new one
-        let meta = self.table_pages.get(&table)
+        let meta = self
+            .table_pages
+            .get(&table)
             .ok_or_else(|| format!("table meta for '{}' not found", table))?
             .clone();
 
@@ -176,16 +185,22 @@ impl Executor {
 
         // Try existing pages
         for &page_id in &meta.page_ids {
-            let frame_id = self.buffer_pool.fetch_page(page_id)
+            let frame_id = self
+                .buffer_pool
+                .fetch_page(page_id)
                 .map_err(|e| format!("fetch page {}: {}", page_id, e))?;
 
-            let has_space = self.buffer_pool.get_page(frame_id)
+            let has_space = self
+                .buffer_pool
+                .get_page(frame_id)
                 .map(|p| p.free_space() >= row_bytes.len() + 5) // 5 = slot entry size
                 .unwrap_or(false);
 
             if has_space {
                 // Log to WAL first (write-ahead guarantee)
-                let slot_id = self.wal.log_insert(txn_id, page_id, &row_bytes)
+                let slot_id = self
+                    .wal
+                    .log_insert(txn_id, page_id, &row_bytes)
                     .map_err(|e| format!("wal insert: {}", e))?;
 
                 // Then modify the buffer pool page
@@ -201,10 +216,14 @@ impl Executor {
 
         // No existing page had space — allocate a new one
         if inserted_page_id.is_none() {
-            let (page_id, frame_id) = self.buffer_pool.new_page()
+            let (page_id, frame_id) = self
+                .buffer_pool
+                .new_page()
                 .map_err(|e| format!("new page: {}", e))?;
 
-            let _slot_id = self.wal.log_insert(txn_id, page_id, &row_bytes)
+            let _slot_id = self
+                .wal
+                .log_insert(txn_id, page_id, &row_bytes)
                 .map_err(|e| format!("wal insert new page: {}", e))?;
 
             if let Some(page) = self.buffer_pool.get_page_mut(frame_id) {
@@ -213,9 +232,11 @@ impl Executor {
             self.buffer_pool.unpin(frame_id, true);
 
             // Register this page with the table
-            self.table_pages.get_mut(&table)
+            self.table_pages
+                .get_mut(&table)
                 .ok_or("table meta missing")?
-                .page_ids.push(page_id);
+                .page_ids
+                .push(page_id);
 
             // Persist the updated page list
             self.save_table_meta(&table)
@@ -225,11 +246,13 @@ impl Executor {
         }
 
         // Commit: fsync WAL, then flush dirty page to data.db
-        self.wal.commit(txn_id)
+        self.wal
+            .commit(txn_id)
             .map_err(|e| format!("wal commit: {}", e))?;
 
         if let Some(pid) = inserted_page_id {
-            self.buffer_pool.flush_page(pid)
+            self.buffer_pool
+                .flush_page(pid)
                 .map_err(|e| format!("flush page: {}", e))?;
         }
 
@@ -244,26 +267,36 @@ impl Executor {
         columns: SelectColumns,
         filter: Option<Expr>,
     ) -> Result<Vec<Row>, String> {
-        let schema = self.catalog.get(&table)
+        let schema = self
+            .catalog
+            .get(&table)
             .ok_or_else(|| format!("table '{}' not found", table))?
             .clone();
 
-        let meta = self.table_pages.get(&table)
+        let meta = self
+            .table_pages
+            .get(&table)
             .ok_or_else(|| format!("table meta for '{}' not found", table))?
             .clone();
 
         let mut results = Vec::new();
 
         for &page_id in &meta.page_ids {
-            let frame_id = self.buffer_pool.fetch_page(page_id)
+            let frame_id = self
+                .buffer_pool
+                .fetch_page(page_id)
                 .map_err(|e| format!("fetch page {}: {}", page_id, e))?;
 
-            let num_slots = self.buffer_pool.get_page(frame_id)
+            let num_slots = self
+                .buffer_pool
+                .get_page(frame_id)
                 .map(|p| p.num_slots())
                 .unwrap_or(0);
 
             for slot_id in 0..num_slots {
-                let tuple_bytes = self.buffer_pool.get_page(frame_id)
+                let tuple_bytes = self
+                    .buffer_pool
+                    .get_page(frame_id)
                     .and_then(|p| p.get_tuple(slot_id))
                     .map(|b| b.to_vec());
 
@@ -293,31 +326,43 @@ impl Executor {
     // ─── DELETE ──────────────────────────────────────────────────────────────
 
     fn exec_delete(&mut self, table: String, filter: Option<Expr>) -> Result<Vec<Row>, String> {
-        let schema = self.catalog.get(&table)
+        let schema = self
+            .catalog
+            .get(&table)
             .ok_or_else(|| format!("table '{}' not found", table))?
             .clone();
 
-        let meta = self.table_pages.get(&table)
+        let meta = self
+            .table_pages
+            .get(&table)
             .ok_or_else(|| format!("table meta for '{}' not found", table))?
             .clone();
 
-        let txn_id = self.wal.begin_txn()
+        let txn_id = self
+            .wal
+            .begin_txn()
             .map_err(|e| format!("wal begin: {}", e))?;
 
         let mut dirty_pages = Vec::new();
 
         for &page_id in &meta.page_ids {
-            let frame_id = self.buffer_pool.fetch_page(page_id)
+            let frame_id = self
+                .buffer_pool
+                .fetch_page(page_id)
                 .map_err(|e| format!("fetch page {}: {}", page_id, e))?;
 
-            let num_slots = self.buffer_pool.get_page(frame_id)
+            let num_slots = self
+                .buffer_pool
+                .get_page(frame_id)
                 .map(|p| p.num_slots())
                 .unwrap_or(0);
 
             let mut page_dirty = false;
 
             for slot_id in 0..num_slots {
-                let tuple_bytes = self.buffer_pool.get_page(frame_id)
+                let tuple_bytes = self
+                    .buffer_pool
+                    .get_page(frame_id)
                     .and_then(|p| p.get_tuple(slot_id))
                     .map(|b| b.to_vec());
 
@@ -335,7 +380,8 @@ impl Executor {
 
                 if should_delete {
                     // WAL first
-                    self.wal.log_delete(txn_id, page_id, slot_id)
+                    self.wal
+                        .log_delete(txn_id, page_id, slot_id)
                         .map_err(|e| format!("wal delete: {}", e))?;
 
                     // Then mark tombstone in buffer pool
@@ -352,35 +398,179 @@ impl Executor {
             }
         }
 
-        self.wal.commit(txn_id)
+        self.wal
+            .commit(txn_id)
             .map_err(|e| format!("wal commit: {}", e))?;
 
         for pid in dirty_pages {
-            self.buffer_pool.flush_page(pid)
+            self.buffer_pool
+                .flush_page(pid)
                 .map_err(|e| format!("flush page: {}", e))?;
         }
 
+        Ok(vec![])
+    }
+    // ─── UPDATE ──────────────────────────────────────────────────────────────
+
+    fn exec_update(
+        &mut self,
+        table: String,
+        assignments: Vec<Assignment>,
+        filter: Option<Expr>,
+    ) -> Result<Vec<Row>, String> {
+        let schema = self
+            .catalog
+            .get(&table)
+            .ok_or_else(|| format!("table '{}' not found", table))?
+            .clone();
+
+        let meta = self
+            .table_pages
+            .get(&table)
+            .ok_or_else(|| format!("table meta for '{}' not found", table))?
+            .clone();
+
+        let txn_id = self
+            .wal
+            .begin_txn()
+            .map_err(|e| format!("wal begin: {}", e))?;
+
+        let mut dirty_pages = Vec::new();
+        let mut updated_count = 0;
+
+        for &page_id in &meta.page_ids {
+            let frame_id = self
+                .buffer_pool
+                .fetch_page(page_id)
+                .map_err(|e| format!("fetch page {}: {}", page_id, e))?;
+
+            let num_slots = self
+                .buffer_pool
+                .get_page(frame_id)
+                .map(|p| p.num_slots())
+                .unwrap_or(0);
+
+            let mut page_dirty = false;
+
+            for slot_id in 0..num_slots {
+                // Read current tuple bytes
+                let old_bytes = self
+                    .buffer_pool
+                    .get_page(frame_id)
+                    .and_then(|p| p.get_tuple(slot_id))
+                    .map(|b| b.to_vec());
+
+                let old_bytes = match old_bytes {
+                    Some(b) => b,
+                    None => continue, // tombstone
+                };
+
+                // Deserialize to check WHERE filter
+                let mut row = schema.deserialize_row(&old_bytes)?;
+
+                let matches = match &filter {
+                    Some(expr) => Self::eval_filter(&schema, &row, expr)?,
+                    None => true,
+                };
+
+                if !matches {
+                    continue;
+                }
+
+                // Apply assignments to the row in memory
+                for assignment in &assignments {
+                    let col_idx = schema
+                        .col_index(&assignment.column)
+                        .ok_or_else(|| format!("column '{}' not found", assignment.column))?;
+
+                    // Type check
+                    let col_type = &schema.columns[col_idx].ty;
+                    match (col_type, &assignment.value) {
+                        (crate::sql::ast::DataType::Int, Value::Int(_)) => {}
+                        (crate::sql::ast::DataType::Text, Value::Text(_)) => {}
+                        _ => {
+                            return Err(format!(
+                                "type mismatch: cannot assign {:?} to column '{}'",
+                                assignment.value, assignment.column
+                            ));
+                        }
+                    }
+
+                    row[col_idx] = assignment.value.clone();
+                }
+
+                // Re-serialize the updated row
+                let new_bytes = schema.serialize_row(&row)?;
+
+                // WAL: log old + new data before touching the page
+                self.wal
+                    .log_update(txn_id, page_id, slot_id, &old_bytes, &new_bytes)
+                    .map_err(|e| format!("wal update: {}", e))?;
+
+                // Write new bytes into the page in-place
+                let ok = self
+                    .buffer_pool
+                    .get_page_mut(frame_id)
+                    .map(|p| p.update_tuple(slot_id, &new_bytes))
+                    .unwrap_or(false);
+
+                if !ok {
+                    // new_bytes is larger than old (TEXT grew) — not supported yet
+                    self.wal
+                        .abort(txn_id)
+                        .map_err(|e| format!("wal abort: {}", e))?;
+                    return Err(format!(
+                        "UPDATE failed: new value for row is larger than original \
+                     (in-place update only supported for same-size or smaller values)"
+                    ));
+                }
+
+                page_dirty = true;
+                updated_count += 1;
+            }
+
+            self.buffer_pool.unpin(frame_id, page_dirty);
+            if page_dirty {
+                dirty_pages.push(page_id);
+            }
+        }
+
+        self.wal
+            .commit(txn_id)
+            .map_err(|e| format!("wal commit: {}", e))?;
+
+        for pid in dirty_pages {
+            self.buffer_pool
+                .flush_page(pid)
+                .map_err(|e| format!("flush page: {}", e))?;
+        }
+
+        let _ = updated_count; // will use for rowcount display later
         Ok(vec![])
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
     fn eval_filter(schema: &Schema, row: &[Value], expr: &Expr) -> Result<bool, String> {
-        let col_idx = schema.col_index(&expr.left)
+        let col_idx = schema
+            .col_index(&expr.left)
             .ok_or_else(|| format!("column '{}' not found", expr.left))?;
         let cell = &row[col_idx];
         let result = match (&expr.op, cell, &expr.right) {
-            (Op::Eq, Value::Int(a),  Value::Int(b))  => a == b,
-            (Op::Ne, Value::Int(a),  Value::Int(b))  => a != b,
-            (Op::Lt, Value::Int(a),  Value::Int(b))  => a <  b,
-            (Op::Gt, Value::Int(a),  Value::Int(b))  => a >  b,
-            (Op::Le, Value::Int(a),  Value::Int(b))  => a <= b,
-            (Op::Ge, Value::Int(a),  Value::Int(b))  => a >= b,
+            (Op::Eq, Value::Int(a), Value::Int(b)) => a == b,
+            (Op::Ne, Value::Int(a), Value::Int(b)) => a != b,
+            (Op::Lt, Value::Int(a), Value::Int(b)) => a < b,
+            (Op::Gt, Value::Int(a), Value::Int(b)) => a > b,
+            (Op::Le, Value::Int(a), Value::Int(b)) => a <= b,
+            (Op::Ge, Value::Int(a), Value::Int(b)) => a >= b,
             (Op::Eq, Value::Text(a), Value::Text(b)) => a == b,
             (Op::Ne, Value::Text(a), Value::Text(b)) => a != b,
-            _ => return Err(format!(
-                "type mismatch in WHERE: {:?} {:?} {:?}", cell, expr.op, expr.right
-            )),
+            _ => {
+                return Err(format!(
+                    "type mismatch in WHERE: {:?} {:?} {:?}",
+                    cell, expr.op, expr.right
+                ));
+            }
         };
         Ok(result)
     }
@@ -388,13 +578,15 @@ impl Executor {
     fn project(schema: &Schema, row: Row, cols: &SelectColumns) -> Result<Row, String> {
         match cols {
             SelectColumns::Star => Ok(row),
-            SelectColumns::Named(names) => {
-                names.iter().map(|name| {
-                    let idx = schema.col_index(name)
+            SelectColumns::Named(names) => names
+                .iter()
+                .map(|name| {
+                    let idx = schema
+                        .col_index(name)
                         .ok_or_else(|| format!("column '{}' not found", name))?;
                     Ok(row[idx].clone())
-                }).collect()
-            }
+                })
+                .collect(),
         }
     }
 
@@ -414,7 +606,9 @@ impl Executor {
         let tmp = format!("{}.tmp", path);
         {
             let mut f = std::fs::OpenOptions::new()
-                .write(true).create(true).truncate(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
                 .open(&tmp)?;
             f.write_all(&buf)?;
             f.sync_all()?;
@@ -428,9 +622,7 @@ impl Executor {
         let path = self.table_meta_path(table);
         let mut f = match std::fs::File::open(&path) {
             Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(TableMeta::default())
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(TableMeta::default()),
             Err(e) => return Err(e),
         };
         let mut buf = Vec::new();
@@ -442,8 +634,10 @@ impl Executor {
         let mut page_ids = Vec::with_capacity(num);
         for i in 0..num {
             let off = 4 + i * 4;
-            if off + 4 > buf.len() { break; }
-            page_ids.push(u32::from_le_bytes(buf[off..off+4].try_into().unwrap()));
+            if off + 4 > buf.len() {
+                break;
+            }
+            page_ids.push(u32::from_le_bytes(buf[off..off + 4].try_into().unwrap()));
         }
         Ok(TableMeta { page_ids })
     }
@@ -525,6 +719,27 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn test_update_basic() {
+        let dir = tmp_dir("update");
+
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE users (id INT, name TEXT, age INT)");
+        run(&mut e, "INSERT INTO users VALUES (1, 'Alice', 30)");
+        run(&mut e, "INSERT INTO users VALUES (2, 'Bob', 25)");
+
+        run(&mut e, "UPDATE users SET age = 31 WHERE id = 1");
+
+        let rows = run(&mut e, "SELECT * FROM users WHERE id = 1");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][2], Value::Int(31)); // age updated
+
+        // Bob unchanged
+        let rows2 = run(&mut e, "SELECT * FROM users WHERE id = 2");
+        assert_eq!(rows2[0][2], Value::Int(25));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn test_schema_survives_restart() {
@@ -532,7 +747,10 @@ mod tests {
 
         {
             let mut e = open_fresh(&dir);
-            run(&mut e, "CREATE TABLE products (id INT, name TEXT, price INT)");
+            run(
+                &mut e,
+                "CREATE TABLE products (id INT, name TEXT, price INT)",
+            );
         }
 
         {

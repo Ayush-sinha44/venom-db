@@ -1,9 +1,8 @@
-
+use super::log_record::LogRecord;
+use crate::storage::page::Page;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use crate::storage::page::Page;
-use super::log_record::LogRecord;
 
 pub struct WalManager {
     log_file: File,
@@ -16,7 +15,9 @@ pub struct WalManager {
 impl WalManager {
     pub fn new(log_path: &str) -> std::io::Result<Self> {
         let log_file = OpenOptions::new()
-            .read(true).write(true).create(true)
+            .read(true)
+            .write(true)
+            .create(true)
             .open(log_path)?;
         Ok(Self {
             log_file,
@@ -36,24 +37,61 @@ impl WalManager {
     }
 
     pub fn log_insert(&mut self, txn_id: u32, page_id: u32, data: &[u8]) -> std::io::Result<u16> {
-        let page = self.pages.entry(page_id).or_insert_with(|| Page::new(page_id));
-        let slot_id = page.insert_tuple(data)
+        let page = self
+            .pages
+            .entry(page_id)
+            .or_insert_with(|| Page::new(page_id));
+        let slot_id = page
+            .insert_tuple(data)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "page full"))?;
-        self.append(LogRecord::Insert { lsn: 0, txn_id, page_id, slot_id, data: data.to_vec() })?;
+        self.append(LogRecord::Insert {
+            lsn: 0,
+            txn_id,
+            page_id,
+            slot_id,
+            data: data.to_vec(),
+        })?;
         Ok(slot_id)
     }
 
     pub fn log_delete(&mut self, txn_id: u32, page_id: u32, slot_id: u16) -> std::io::Result<bool> {
-        let old_data = self.pages
+        let old_data = self
+            .pages
             .get(&page_id)
             .and_then(|p| p.get_tuple(slot_id))
             .map(|d| d.to_vec())
             .unwrap_or_default();
-        let deleted = self.pages.get_mut(&page_id)
+        let deleted = self
+            .pages
+            .get_mut(&page_id)
             .map(|p| p.delete_tuple(slot_id))
             .unwrap_or(false);
-        self.append(LogRecord::Delete { lsn: 0, txn_id, page_id, slot_id, old_data })?;
+        self.append(LogRecord::Delete {
+            lsn: 0,
+            txn_id,
+            page_id,
+            slot_id,
+            old_data,
+        })?;
         Ok(deleted)
+    }
+    pub fn log_update(
+        &mut self,
+        txn_id: u32,
+        page_id: u32,
+        slot_id: u16,
+        old_data: &[u8],
+        new_data: &[u8],
+    ) -> std::io::Result<()> {
+        self.append(LogRecord::Update {
+            lsn: 0,
+            txn_id,
+            page_id,
+            slot_id,
+            old_data: old_data.to_vec(),
+            new_data: new_data.to_vec(),
+        })?;
+        Ok(())
     }
 
     pub fn commit(&mut self, txn_id: u32) -> std::io::Result<()> {
@@ -73,25 +111,34 @@ impl WalManager {
     pub fn recover(&mut self) -> std::io::Result<RecoveryReport> {
         let records = self.read_all_records()?;
         let mut report = RecoveryReport::default();
-        if records.is_empty() { return Ok(report); }
+        if records.is_empty() {
+            return Ok(report);
+        }
 
         // Build per-txn commit/abort/start sets
         // A txn_id is only "committed" if its BEGIN and COMMIT are in the
         // same contiguous session. We track per-session by walking forward.
         let mut committed: HashSet<u32> = HashSet::new();
-        let mut aborted:   HashSet<u32> = HashSet::new();
-        let mut started:   HashSet<u32> = HashSet::new();
+        let mut aborted: HashSet<u32> = HashSet::new();
+        let mut started: HashSet<u32> = HashSet::new();
 
         for record in &records {
             match record {
-                LogRecord::Begin  { txn_id, .. } => { started.insert(*txn_id); }
-                LogRecord::Commit { txn_id, .. } => { committed.insert(*txn_id); }
-                LogRecord::Abort  { txn_id, .. } => { aborted.insert(*txn_id); }
+                LogRecord::Begin { txn_id, .. } => {
+                    started.insert(*txn_id);
+                }
+                LogRecord::Commit { txn_id, .. } => {
+                    committed.insert(*txn_id);
+                }
+                LogRecord::Abort { txn_id, .. } => {
+                    aborted.insert(*txn_id);
+                }
                 _ => {}
             }
         }
 
-        let incomplete: HashSet<u32> = started.iter()
+        let incomplete: HashSet<u32> = started
+            .iter()
             .filter(|id| !committed.contains(id) && !aborted.contains(id))
             .copied()
             .collect();
@@ -99,16 +146,25 @@ impl WalManager {
         // REDO: replay only committed txns
         for record in &records {
             match record {
-                LogRecord::Insert { txn_id, page_id, data, .. }
-                    if committed.contains(txn_id) =>
-                {
-                    let page = self.pages.entry(*page_id).or_insert_with(|| Page::new(*page_id));
+                LogRecord::Insert {
+                    txn_id,
+                    page_id,
+                    data,
+                    ..
+                } if committed.contains(txn_id) => {
+                    let page = self
+                        .pages
+                        .entry(*page_id)
+                        .or_insert_with(|| Page::new(*page_id));
                     page.insert_tuple(data);
                     report.redone += 1;
                 }
-                LogRecord::Delete { txn_id, page_id, slot_id, .. }
-                    if committed.contains(txn_id) =>
-                {
+                LogRecord::Delete {
+                    txn_id,
+                    page_id,
+                    slot_id,
+                    ..
+                } if committed.contains(txn_id) => {
                     if let Some(page) = self.pages.get_mut(page_id) {
                         page.delete_tuple(*slot_id);
                         report.redone += 1;
@@ -125,14 +181,21 @@ impl WalManager {
                 _ => continue,
             };
             match record {
-                LogRecord::Insert { page_id, slot_id, .. } => {
+                LogRecord::Insert {
+                    page_id, slot_id, ..
+                } => {
                     if let Some(page) = self.pages.get_mut(page_id) {
                         page.delete_tuple(*slot_id);
                         report.undone += 1;
                     }
                 }
-                LogRecord::Delete { page_id, old_data, .. } => {
-                    let page = self.pages.entry(*page_id).or_insert_with(|| Page::new(*page_id));
+                LogRecord::Delete {
+                    page_id, old_data, ..
+                } => {
+                    let page = self
+                        .pages
+                        .entry(*page_id)
+                        .or_insert_with(|| Page::new(*page_id));
                     page.insert_tuple(old_data);
                     report.undone += 1;
                 }
@@ -148,16 +211,51 @@ impl WalManager {
         let lsn = self.current_lsn;
         self.current_lsn += 1;
         record = match record {
-            LogRecord::Begin  { txn_id, .. } => LogRecord::Begin  { lsn, txn_id },
-            LogRecord::Insert { txn_id, page_id, slot_id, data, .. }
-                => LogRecord::Insert { lsn, txn_id, page_id, slot_id, data },
-            LogRecord::Delete { txn_id, page_id, slot_id, old_data, .. }
-                => LogRecord::Delete { lsn, txn_id, page_id, slot_id, old_data },
-            LogRecord::Update { txn_id, page_id, slot_id, old_data, new_data, .. }
-                => LogRecord::Update { lsn, txn_id, page_id, slot_id, old_data, new_data },
+            LogRecord::Begin { txn_id, .. } => LogRecord::Begin { lsn, txn_id },
+            LogRecord::Insert {
+                txn_id,
+                page_id,
+                slot_id,
+                data,
+                ..
+            } => LogRecord::Insert {
+                lsn,
+                txn_id,
+                page_id,
+                slot_id,
+                data,
+            },
+            LogRecord::Delete {
+                txn_id,
+                page_id,
+                slot_id,
+                old_data,
+                ..
+            } => LogRecord::Delete {
+                lsn,
+                txn_id,
+                page_id,
+                slot_id,
+                old_data,
+            },
+            LogRecord::Update {
+                txn_id,
+                page_id,
+                slot_id,
+                old_data,
+                new_data,
+                ..
+            } => LogRecord::Update {
+                lsn,
+                txn_id,
+                page_id,
+                slot_id,
+                old_data,
+                new_data,
+            },
             LogRecord::Commit { txn_id, .. } => LogRecord::Commit { lsn, txn_id },
-            LogRecord::Abort  { txn_id, .. } => LogRecord::Abort  { lsn, txn_id },
-            LogRecord::Checkpoint { .. }     => LogRecord::Checkpoint { lsn },
+            LogRecord::Abort { txn_id, .. } => LogRecord::Abort { lsn, txn_id },
+            LogRecord::Checkpoint { .. } => LogRecord::Checkpoint { lsn },
         };
         let bytes = record.to_bytes();
         self.log_file.seek(SeekFrom::End(0))?;
@@ -178,10 +276,12 @@ impl WalManager {
         let mut records = Vec::new();
         let mut off = 0;
         while off + 4 <= all_bytes.len() {
-            let len = u32::from_le_bytes(all_bytes[off..off+4].try_into().unwrap()) as usize;
+            let len = u32::from_le_bytes(all_bytes[off..off + 4].try_into().unwrap()) as usize;
             off += 4;
-            if off + len > all_bytes.len() { break; }
-            if let Some(r) = LogRecord::from_bytes(&all_bytes[off..off+len]) {
+            if off + len > all_bytes.len() {
+                break;
+            }
+            if let Some(r) = LogRecord::from_bytes(&all_bytes[off..off + len]) {
                 records.push(r);
             }
             off += len;
@@ -189,8 +289,12 @@ impl WalManager {
         Ok(records)
     }
 
-    pub fn current_lsn(&self) -> u64 { self.current_lsn }
-    pub fn active_txns(&self) -> &HashSet<u32> { &self.active_txns }
+    pub fn current_lsn(&self) -> u64 {
+        self.current_lsn
+    }
+    pub fn active_txns(&self) -> &HashSet<u32> {
+        &self.active_txns
+    }
 }
 
 #[derive(Debug, Default)]
@@ -204,7 +308,9 @@ pub struct RecoveryReport {
 mod tests {
     use super::*;
 
-    fn temp(name: &str) -> String { format!("/tmp/wal_{}.log", name) }
+    fn temp(name: &str) -> String {
+        format!("/tmp/wal_{}.log", name)
+    }
 
     #[test]
     fn test_commit_survives_restart() -> std::io::Result<()> {
