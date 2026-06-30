@@ -43,10 +43,10 @@ impl PageHeader {
 
     pub fn from_bytes(buf: &[u8]) -> Self {
         Self {
-            page_id:           u32::from_le_bytes(buf[0..4].try_into().unwrap()),
-            num_slots:         u16::from_le_bytes(buf[4..6].try_into().unwrap()),
+            page_id: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
+            num_slots: u16::from_le_bytes(buf[4..6].try_into().unwrap()),
             free_space_offset: u16::from_le_bytes(buf[6..8].try_into().unwrap()),
-            checksum:          u32::from_le_bytes(buf[8..12].try_into().unwrap()),
+            checksum: u32::from_le_bytes(buf[8..12].try_into().unwrap()),
         }
     }
 }
@@ -97,7 +97,11 @@ impl Page {
     }
 
     pub fn from_bytes(id: u32, data: [u8; PAGE_SIZE]) -> Self {
-        Self { id, data, dirty: false }
+        Self {
+            id,
+            data,
+            dirty: false,
+        }
     }
 
     // --- Header helpers ---
@@ -147,11 +151,14 @@ impl Page {
 
         // Write new slot
         let slot_id = header.num_slots;
-        self.write_slot(slot_id, &Slot {
-            offset: new_free_offset,
-            length: tuple_len,
-            active: true,
-        });
+        self.write_slot(
+            slot_id,
+            &Slot {
+                offset: new_free_offset,
+                length: tuple_len,
+                active: true,
+            },
+        );
 
         // Update header
         header.num_slots += 1;
@@ -175,6 +182,23 @@ impl Page {
         let start = slot.offset as usize;
         let end = start + slot.length as usize;
         Some(&self.data[start..end])
+    }
+    pub fn update_tuple(&mut self, slot_id: SlotId, new_data: &[u8]) -> bool {
+        let header = self.read_header();
+        if slot_id >= header.num_slots {
+            return false;
+        }
+        let slot = self.read_slot(slot_id);
+        if !slot.active {
+            return false;
+        }
+        if new_data.len() > slot.length as usize {
+            return false;
+        }
+        let start = slot.offset as usize;
+        self.data[start..start + new_data.len()].copy_from_slice(new_data);
+        self.dirty = true;
+        true
     }
 
     /// Mark a tuple as deleted (tombstone — space not reclaimed until compaction)
