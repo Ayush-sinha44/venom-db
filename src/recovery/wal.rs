@@ -387,6 +387,45 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn test_update_undo_on_incomplete_txn() -> std::io::Result<()> {
+        let path = temp("update_undo");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut wal = WalManager::new(&path)?;
+            let t1 = wal.begin_txn()?;
+            wal.log_insert(t1, 0, b"original data here....")?;
+            wal.commit(t1)?;
+
+            let t2 = wal.begin_txn()?;
+            wal.log_update(
+                t2,
+                0,
+                0,
+                b"original data here....",
+                b"updated data here.....",
+            )?;
+            // crash — no commit
+        }
+        {
+            let mut wal = WalManager::new(&path)?;
+            let report = wal.recover()?;
+
+            // insert was committed → redone
+            // update was incomplete → undone, original data restored
+            assert_eq!(report.redone, 1);
+            assert_eq!(report.undone, 1);
+            assert_eq!(report.incomplete_txns.len(), 1);
+
+            // the row must show the ORIGINAL data, not the updated one
+            assert_eq!(
+                wal.pages[&0].get_tuple(0).unwrap(),
+                b"original data here...."
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
+    #[test]
     fn test_update_redo_on_restart() -> std::io::Result<()> {
         let path = temp("update_redo");
         let _ = std::fs::remove_file(&path);
