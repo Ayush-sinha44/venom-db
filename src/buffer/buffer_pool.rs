@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use crate::storage::disk_manager::DiskManager;
-use crate::storage::page::Page;
 use super::frame::Frame;
 use super::lru_replacer::LruReplacer;
+use crate::storage::disk_manager::DiskManager;
+use crate::storage::page::Page;
+use std::collections::HashMap;
 
 /// The Buffer Pool is the heart of the database's memory management.
 ///
@@ -15,7 +15,7 @@ use super::lru_replacer::LruReplacer;
 /// Always unpin when done, or the pool fills up and deadlocks.
 pub struct BufferPool {
     frames: Vec<Frame>,
-    page_table: HashMap<u32, usize>,  // page_id → frame_index
+    page_table: HashMap<u32, usize>, // page_id → frame_index
     replacer: LruReplacer,
     disk: DiskManager,
     pool_size: usize,
@@ -139,7 +139,9 @@ impl BufferPool {
     /// Cache hit rate as a percentage.
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
-        if total == 0 { return 0.0; }
+        if total == 0 {
+            return 0.0;
+        }
         self.hits as f64 / total as f64 * 100.0
     }
 
@@ -208,7 +210,8 @@ mod tests {
 
         // Fetch it back
         let frame_id2 = pool.fetch_page(page_id)?;
-        let data = pool.get_page(frame_id2)
+        let data = pool
+            .get_page(frame_id2)
             .unwrap()
             .get_tuple(0)
             .unwrap()
@@ -270,6 +273,41 @@ mod tests {
         // 9 hits
         println!("Hit rate: {:.1}%", pool.hit_rate());
         assert!(pool.hit_rate() > 80.0);
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+    #[test]
+    fn test_dirty_page_flushed_before_eviction() -> std::io::Result<()> {
+        let path = "/tmp/test_dirty_evict.db";
+        let _ = std::fs::remove_file(path);
+
+        let mut pool = BufferPool::new(2, path)?; // tiny pool forces eviction
+
+        let (pid0, fid0) = pool.new_page()?;
+        {
+            let page = pool.get_page_mut(fid0).unwrap();
+            page.insert_tuple(b"dirty data");
+        }
+        pool.unpin(fid0, true); // mark dirty, do NOT flush manually
+
+        let (_pid1, fid1) = pool.new_page()?;
+        pool.unpin(fid1, false);
+
+        let (_pid2, fid2) = pool.new_page()?; // forces eviction of pid0 (LRU)
+        pool.unpin(fid2, false);
+
+        // pid0 should have been auto-flushed to disk during eviction
+        let fid_reload = pool.fetch_page(pid0)?;
+        let data = pool
+            .get_page(fid_reload)
+            .unwrap()
+            .get_tuple(0)
+            .unwrap()
+            .to_vec();
+        pool.unpin(fid_reload, false);
+
+        assert_eq!(data, b"dirty data");
 
         let _ = std::fs::remove_file(path);
         Ok(())
