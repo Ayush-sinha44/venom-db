@@ -40,7 +40,7 @@ impl LockQueue {
 
     /// Can a new request of `mode` be granted right now?
     pub fn can_grant(&self, txn_id: u32, mode: &LockMode) -> bool {
-        let (shared, exclusive) = self.granted_counts();
+        let (_shared, exclusive) = self.granted_counts();
 
         // If this txn already holds a compatible lock, upgrade is possible
         let already_holds_exclusive = self

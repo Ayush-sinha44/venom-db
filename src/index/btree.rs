@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use super::node::{BTreeNode, InternalNode, LeafNode, Rid, ORDER};
+use super::node::{BTreeNode, InternalNode, LeafNode, Rid};
 
 /// The B-Tree index maps i64 keys → Rid (page_id, slot_id).
 ///

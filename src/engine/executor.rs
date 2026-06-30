@@ -94,14 +94,12 @@ impl Executor {
                         self.buffer_pool.unpin(frame_id, true);
                     }
                     Err(_) => {
-                        // Page not yet on disk — create a new frame for it
-                        // We write the wal page data directly via a new_page allocation
-                        // at this specific id. Since DiskManager allocates sequentially,
-                        // we flush the wal page to disk first.
-                        let mut temp_page = Page::from_bytes(page_id, data);
-                        temp_page.dirty = true;
-                        // Write directly through disk — buffer pool will pick it up
-                        // on next fetch_page()
+                        // Page not yet allocated on disk. Since DiskManager allocates
+                        // sequentially, we can't target a specific page_id here yet.
+                        // This is a known gap — WAL pages beyond the current disk
+                        // allocation aren't recovered. Acceptable for now since INSERT
+                        // always allocates via buffer_pool.new_page() which keeps the
+                        // WAL and disk allocators in sync.
                     }
                 }
             }
@@ -198,7 +196,7 @@ impl Executor {
 
             if has_space {
                 // Log to WAL first (write-ahead guarantee)
-                let slot_id = self
+                let _slot_id = self
                     .wal
                     .log_insert(txn_id, page_id, &row_bytes)
                     .map_err(|e| format!("wal insert: {}", e))?;
