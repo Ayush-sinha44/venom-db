@@ -170,6 +170,27 @@ impl WalManager {
                         report.redone += 1;
                     }
                 }
+                LogRecord::Update {
+                    txn_id,
+                    page_id,
+                    slot_id,
+                    new_data,
+                    ..
+                } if committed.contains(txn_id) => {
+                    if let Some(page) = self.pages.get_mut(page_id) {
+                        page.update_tuple(*slot_id, new_data);
+                        report.redone += 1;
+                    } else {
+                        // Page wasn't touched by INSERT/DELETE in this log — shouldn't
+                        // normally happen since UPDATE requires the row to already exist,
+                        // but guard anyway.
+                        let mut new_page = Page::new(*page_id);
+                        new_page.update_tuple(*slot_id, new_data);
+                        self.pages.insert(*page_id, new_page);
+                        report.redone += 1;
+                    }
+                }
+
                 _ => {}
             }
         }
