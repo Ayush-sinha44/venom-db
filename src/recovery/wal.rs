@@ -364,6 +364,49 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         Ok(())
     }
+    #[test]
+    fn test_multiple_updates_undo_in_reverse_order() -> std::io::Result<()> {
+        let path = temp("multi_update_undo");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut wal = WalManager::new(&path)?;
+            let t1 = wal.begin_txn()?;
+            wal.log_insert(t1, 0, b"v0 data here..........")?;
+            wal.commit(t1)?;
+
+            let t2 = wal.begin_txn()?;
+            wal.log_update(
+                t2,
+                0,
+                0,
+                b"v0 data here..........",
+                b"v1 data here..........",
+            )?;
+            wal.log_update(
+                t2,
+                0,
+                0,
+                b"v1 data here..........",
+                b"v2 data here..........",
+            )?;
+            // crash mid-transaction, two updates logged, neither committed
+        }
+        {
+            let mut wal = WalManager::new(&path)?;
+            let report = wal.recover()?;
+
+            assert_eq!(report.redone, 1); // the insert
+            assert_eq!(report.undone, 2); // both updates rolled back
+
+            // must end up back at v0 — the original pre-transaction state
+            assert_eq!(
+                wal.pages[&0].get_tuple(0).unwrap(),
+                b"v0 data here.........."
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
 
     #[test]
     fn test_uncommitted_txn_is_rolled_back() -> std::io::Result<()> {
