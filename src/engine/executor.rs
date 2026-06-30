@@ -874,4 +874,108 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn test_update_no_matching_rows() {
+        let dir = tmp_dir("update_no_match");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val INT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 100)");
+
+        let result = run(&mut e, "UPDATE t SET val = 999 WHERE id = 999");
+        assert_eq!(result.len(), 0); // no error, just no-op
+
+        let rows = run(&mut e, "SELECT * FROM t");
+        assert_eq!(rows[0][1], Value::Int(100)); // unchanged
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn test_update_all_rows_no_where() {
+        let dir = tmp_dir("update_all");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, status INT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 0)");
+        run(&mut e, "INSERT INTO t VALUES (2, 0)");
+        run(&mut e, "INSERT INTO t VALUES (3, 0)");
+
+        run(&mut e, "UPDATE t SET status = 1");
+
+        let rows = run(&mut e, "SELECT * FROM t");
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|r| r[1] == Value::Int(1)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn test_update_nonexistent_table_errors() {
+        let dir = tmp_dir("update_no_table");
+        let mut e = open_fresh(&dir);
+
+        let mut l = Lexer::new("UPDATE ghost SET x = 1");
+        let tokens = l.tokenize().unwrap();
+        let mut p = Parser::new(tokens);
+        let stmt = p.parse().unwrap();
+
+        assert!(e.execute(stmt).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn test_update_multiple_columns() {
+        let dir = tmp_dir("update_multicol");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE users (id INT, name TEXT, age INT)");
+        run(&mut e, "INSERT INTO users VALUES (1, 'Alice', 30)");
+
+        run(
+            &mut e,
+            "UPDATE users SET age = 31, name = 'Alicia' WHERE id = 1",
+        );
+
+        let rows = run(&mut e, "SELECT * FROM users WHERE id = 1");
+        assert_eq!(rows[0][1], Value::Text("Alicia".into()));
+        assert_eq!(rows[0][2], Value::Int(31));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn test_update_text_shrink_succeeds() {
+        let dir = tmp_dir("update_shrink");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'LongerOriginalName')");
+
+        let result = run(&mut e, "UPDATE t SET name = 'Short' WHERE id = 1");
+        assert_eq!(result.len(), 0);
+
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 1");
+        assert_eq!(rows[0][1], Value::Text("Short".into()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_update_text_growth_fails_cleanly() {
+        let dir = tmp_dir("update_grow");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Short')");
+
+        let mut l = Lexer::new("UPDATE t SET name = 'MuchLongerNameThanOriginal' WHERE id = 1");
+        let tokens = l.tokenize().unwrap();
+        let mut p = Parser::new(tokens);
+        let stmt = p.parse().unwrap();
+
+        let result = e.execute(stmt);
+        assert!(
+            result.is_err(),
+            "growing TEXT should fail in current implementation"
+        );
+
+        // Original row must be untouched after the failed update
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 1");
+        assert_eq!(rows[0][1], Value::Text("Short".into()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
