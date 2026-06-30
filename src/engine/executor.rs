@@ -515,7 +515,7 @@ impl Executor {
                     .unwrap_or(false);
 
                 if !ok {
-                    // new_bytes is larger than old (TEXT grew) — not supported yet
+                    self.buffer_pool.unpin(frame_id, page_dirty); // unpin before returning
                     self.wal
                         .abort(txn_id)
                         .map_err(|e| format!("wal abort: {}", e))?;
