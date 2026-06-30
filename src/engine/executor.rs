@@ -716,9 +716,33 @@ mod tests {
             assert_eq!(rows[0][0], Value::Int(1));
             assert_eq!(rows[1][1], Value::Text("Bob".into()));
         }
+        #[test]
+        fn test_update_rollback_after_crash() {
+            let dir = tmp_dir("update_crash");
 
+            // Session 1: create table, insert, commit
+            {
+                let mut e = open_fresh(&dir);
+                run(&mut e, "CREATE TABLE accounts (id INT, balance INT)");
+                run(&mut e, "INSERT INTO accounts VALUES (1, 100)");
+            }
+
+            {
+                let mut e = open_fresh(&dir);
+                run(&mut e, "UPDATE accounts SET balance = 200 WHERE id = 1");
+            }
+
+            {
+                let mut e = open_fresh(&dir);
+                let rows = run(&mut e, "SELECT * FROM accounts WHERE id = 1");
+                assert_eq!(rows[0][1], Value::Int(200));
+            }
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
     #[test]
     fn test_update_survives_buffer_pool_pressure() {
         let dir = tmp_dir("update_pressure");
