@@ -220,6 +220,17 @@ impl WalManager {
                     page.insert_tuple(old_data);
                     report.undone += 1;
                 }
+                LogRecord::Update {
+                    page_id,
+                    slot_id,
+                    old_data,
+                    ..
+                } => {
+                    if let Some(page) = self.pages.get_mut(page_id) {
+                        page.update_tuple(*slot_id, old_data);
+                        report.undone += 1;
+                    }
+                }
                 _ => {}
             }
             report.incomplete_txns.insert(txn_id);
