@@ -135,7 +135,33 @@ impl Parser {
             None
         };
 
-        Ok(Statement::Select { table, columns, filter })
+        // ORDER BY col [ASC|DESC]
+        let order_by = if matches!(self.peek(), Token::Order) {
+            self.advance(); // consume ORDER
+            self.expect(&Token::By)?;
+            let col = self.expect_ident()?;
+            let dir = match self.peek() {
+                Token::Asc  => { self.advance(); OrderDir::Asc }
+                Token::Desc => { self.advance(); OrderDir::Desc }
+                _           => OrderDir::Asc, // default ASC
+            };
+            Some((col, dir))
+        } else {
+            None
+        };
+
+        // LIMIT n
+        let limit = if matches!(self.peek(), Token::Limit) {
+            self.advance();
+            match self.advance().clone() {
+                Token::IntLit(n) if n >= 0 => Some(n as u64),
+                t => return Err(format!("expected positive integer after LIMIT, got {:?}", t)),
+            }
+        } else {
+            None
+        };
+
+        Ok(Statement::Select { table, columns, filter, order_by, limit })
     }
 
     /// DELETE FROM name [WHERE expr]

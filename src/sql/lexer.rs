@@ -8,6 +8,7 @@ pub enum Token {
     Select, From, Where, Delete,
     Int, Text, Update, Set,
     Null, Is, Not,
+    Order, By, Asc, Desc, Limit,
 
     // Punctuation
     LParen, RParen, Comma, Semicolon, Star,
@@ -141,6 +142,11 @@ impl Lexer {
             "NULL"   => Token::Null,
             "IS"     => Token::Is,
             "NOT"    => Token::Not,
+            "ORDER"  => Token::Order,
+            "BY"     => Token::By,
+            "ASC"    => Token::Asc,
+            "DESC"   => Token::Desc,
+            "LIMIT"  => Token::Limit,
             _        => Token::Ident(s),
         })
     }

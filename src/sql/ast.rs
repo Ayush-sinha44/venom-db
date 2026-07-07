@@ -25,6 +25,8 @@ pub enum Statement {
         table: String,
         columns: SelectColumns,
         filter: Option<Expr>,
+        order_by: Option<(String, OrderDir)>,
+        limit: Option<u64>,
     },
     Delete {
         table: String,
@@ -48,6 +50,12 @@ pub enum DataType {
 pub enum SelectColumns {
     Star,                    // SELECT *
     Named(Vec<String>),      // SELECT col1, col2
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OrderDir {
+    Asc,
+    Desc,
 }
 
 /// A literal value in SQL
