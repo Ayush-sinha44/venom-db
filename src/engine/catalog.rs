@@ -122,9 +122,9 @@ mod tests {
 
     fn make_schema() -> Schema {
         Schema::new("users".into(), vec![
-            ColumnDef { name: "id".into(),   ty: DataType::Int },
-            ColumnDef { name: "name".into(), ty: DataType::Text },
-            ColumnDef { name: "age".into(),  ty: DataType::Int },
+            ColumnDef { name: "id".into(),   ty: DataType::Int,  primary_key: false },
+            ColumnDef { name: "name".into(), ty: DataType::Text, primary_key: false },
+            ColumnDef { name: "age".into(),  ty: DataType::Int,  primary_key: false },
         ])
     }
 

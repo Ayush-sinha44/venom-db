@@ -130,7 +130,7 @@ impl CatalogStore {
                     )),
                 };
                 off += 1;
-                columns.push(ColumnDef { name: col_name, ty });
+                columns.push(ColumnDef { name: col_name, ty, primary_key: false });
             }
 
             // Use insert directly — catalog.create_table() would error on duplicate
@@ -151,13 +151,13 @@ mod tests {
     fn make_catalog() -> Catalog {
         let mut c = Catalog::new();
         c.create_table(Schema::new("users".into(), vec![
-            ColumnDef { name: "id".into(),   ty: DataType::Int },
-            ColumnDef { name: "name".into(), ty: DataType::Text },
-            ColumnDef { name: "age".into(),  ty: DataType::Int },
+            ColumnDef { name: "id".into(),   ty: DataType::Int,  primary_key: false },
+            ColumnDef { name: "name".into(), ty: DataType::Text, primary_key: false },
+            ColumnDef { name: "age".into(),  ty: DataType::Int,  primary_key: false },
         ])).unwrap();
         c.create_table(Schema::new("posts".into(), vec![
-            ColumnDef { name: "post_id".into(), ty: DataType::Int },
-            ColumnDef { name: "body".into(),    ty: DataType::Text },
+            ColumnDef { name: "post_id".into(), ty: DataType::Int,  primary_key: false },
+            ColumnDef { name: "body".into(),    ty: DataType::Text, primary_key: false },
         ])).unwrap();
         c
     }

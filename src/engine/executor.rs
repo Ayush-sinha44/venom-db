@@ -124,7 +124,9 @@ impl Executor {
                 table,
                 columns,
                 filter,
-            } => self.exec_select(table, columns, filter),
+                order_by,
+                limit,
+            } => self.exec_select(table, columns, filter, order_by, limit),
             Statement::Delete { table, filter } => self.exec_delete(table, filter),
             Statement::Update {
                 table,
@@ -264,6 +266,8 @@ impl Executor {
         table: String,
         columns: SelectColumns,
         filter: Option<Expr>,
+        order_by: Option<(String, OrderDir)>,
+        limit: Option<u64>,
     ) -> Result<Vec<Row>, String> {
         let schema = self
             .catalog
@@ -316,6 +320,34 @@ impl Executor {
             }
 
             self.buffer_pool.unpin(frame_id, false);
+        }
+
+        // ORDER BY: sort results by the specified column
+        if let Some((ref col_name, ref dir)) = order_by {
+            // Resolve column index in the projected output
+            let sort_idx = match &columns {
+                SelectColumns::Star => {
+                    schema.col_index(col_name)
+                        .ok_or_else(|| format!("ORDER BY column '{}' not found", col_name))?
+                }
+                SelectColumns::Named(names) => {
+                    names.iter().position(|n| n == col_name)
+                        .ok_or_else(|| format!("ORDER BY column '{}' not in SELECT list", col_name))?
+                }
+            };
+
+            results.sort_by(|a, b| {
+                let cmp = Self::compare_values(&a[sort_idx], &b[sort_idx]);
+                match dir {
+                    OrderDir::Asc  => cmp,
+                    OrderDir::Desc => cmp.reverse(),
+                }
+            });
+        }
+
+        // LIMIT: truncate results
+        if let Some(n) = limit {
+            results.truncate(n as usize);
         }
 
         Ok(results)
@@ -601,6 +633,19 @@ impl Executor {
                     Ok(row[idx].clone())
                 })
                 .collect(),
+        }
+    }
+
+    /// Compare two Values for ORDER BY. NULLs sort last.
+    fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match (a, b) {
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Null, _)           => Ordering::Greater,  // NULLs last
+            (_, Value::Null)           => Ordering::Less,
+            (Value::Int(x), Value::Int(y)) => x.cmp(y),
+            (Value::Text(x), Value::Text(y)) => x.cmp(y),
+            _ => Ordering::Equal, // mismatched types: treat as equal
         }
     }
 
@@ -1120,6 +1165,116 @@ mod tests {
             assert_eq!(null_names.len(), 1);
             assert_eq!(null_names[0][0], Value::Int(2));
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── ORDER BY + LIMIT tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_order_by_asc() {
+        let dir = tmp_dir("order_asc");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT, age INT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Charlie', 35)");
+        run(&mut e, "INSERT INTO t VALUES (2, 'Alice', 25)");
+        run(&mut e, "INSERT INTO t VALUES (3, 'Bob', 30)");
+
+        let rows = run(&mut e, "SELECT * FROM t ORDER BY age ASC");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0][2], Value::Int(25)); // Alice
+        assert_eq!(rows[1][2], Value::Int(30)); // Bob
+        assert_eq!(rows[2][2], Value::Int(35)); // Charlie
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_order_by_desc() {
+        let dir = tmp_dir("order_desc");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT, age INT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Charlie', 35)");
+        run(&mut e, "INSERT INTO t VALUES (2, 'Alice', 25)");
+        run(&mut e, "INSERT INTO t VALUES (3, 'Bob', 30)");
+
+        let rows = run(&mut e, "SELECT * FROM t ORDER BY age DESC");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0][2], Value::Int(35)); // Charlie
+        assert_eq!(rows[1][2], Value::Int(30)); // Bob
+        assert_eq!(rows[2][2], Value::Int(25)); // Alice
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_limit() {
+        let dir = tmp_dir("limit");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val INT)");
+        for i in 1..=10 {
+            run(&mut e, &format!("INSERT INTO t VALUES ({}, {})", i, i * 10));
+        }
+
+        let rows = run(&mut e, "SELECT * FROM t LIMIT 3");
+        assert_eq!(rows.len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_order_by_with_limit() {
+        let dir = tmp_dir("order_limit");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, score INT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 80)");
+        run(&mut e, "INSERT INTO t VALUES (2, 95)");
+        run(&mut e, "INSERT INTO t VALUES (3, 70)");
+        run(&mut e, "INSERT INTO t VALUES (4, 90)");
+        run(&mut e, "INSERT INTO t VALUES (5, 85)");
+
+        // Top 3 scores
+        let rows = run(&mut e, "SELECT * FROM t ORDER BY score DESC LIMIT 3");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0][1], Value::Int(95));
+        assert_eq!(rows[1][1], Value::Int(90));
+        assert_eq!(rows[2][1], Value::Int(85));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_order_by_with_where() {
+        let dir = tmp_dir("order_where");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT, age INT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Alice', 30)");
+        run(&mut e, "INSERT INTO t VALUES (2, 'Bob', 17)");
+        run(&mut e, "INSERT INTO t VALUES (3, 'Charlie', 25)");
+        run(&mut e, "INSERT INTO t VALUES (4, 'Dave', 15)");
+        run(&mut e, "INSERT INTO t VALUES (5, 'Eve', 22)");
+
+        let rows = run(&mut e, "SELECT * FROM t WHERE age > 18 ORDER BY age ASC LIMIT 2");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][2], Value::Int(22)); // Eve
+        assert_eq!(rows[1][2], Value::Int(25)); // Charlie
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_order_by_text() {
+        let dir = tmp_dir("order_text");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Charlie')");
+        run(&mut e, "INSERT INTO t VALUES (2, 'Alice')");
+        run(&mut e, "INSERT INTO t VALUES (3, 'Bob')");
+
+        let rows = run(&mut e, "SELECT * FROM t ORDER BY name ASC");
+        assert_eq!(rows[0][1], Value::Text("Alice".into()));
+        assert_eq!(rows[1][1], Value::Text("Bob".into()));
+        assert_eq!(rows[2][1], Value::Text("Charlie".into()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,9 +1,9 @@
 /// AST node types for the SQL subset venom-db supports.
 ///
 /// Supported:
-///   CREATE TABLE name (col type, ...)
+///   CREATE TABLE name (col type [PRIMARY KEY], ...)
 ///   INSERT INTO name VALUES (v1, v2, ...)
-///   SELECT col,... FROM name [WHERE expr]
+///   SELECT col,... FROM name [WHERE expr] [ORDER BY col ASC|DESC] [LIMIT n]
 ///   DELETE FROM name [WHERE expr]
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +25,8 @@ pub enum Statement {
         table: String,
         columns: SelectColumns,
         filter: Option<Expr>,
+        order_by: Option<(String, OrderDir)>,
+        limit: Option<u64>,
     },
     Delete {
         table: String,
@@ -36,6 +38,13 @@ pub enum Statement {
 pub struct ColumnDef {
     pub name: String,
     pub ty: DataType,
+    pub primary_key: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OrderDir {
+    Asc,
+    Desc,
 }
 
 #[derive(Debug, Clone, PartialEq)]
