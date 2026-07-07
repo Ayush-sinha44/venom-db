@@ -481,11 +481,12 @@ impl Executor {
                         .col_index(&assignment.column)
                         .ok_or_else(|| format!("column '{}' not found", assignment.column))?;
 
-                    // Type check
+                    // Type check — NULL is allowed for any column type
                     let col_type = &schema.columns[col_idx].ty;
-                    match (col_type, &assignment.value) {
-                        (crate::sql::ast::DataType::Int, Value::Int(_)) => {}
-                        (crate::sql::ast::DataType::Text, Value::Text(_)) => {}
+                    match (&assignment.value, col_type) {
+                        (Value::Null, _) => {} // NULL is valid for any column
+                        (Value::Int(_), crate::sql::ast::DataType::Int) => {}
+                        (Value::Text(_), crate::sql::ast::DataType::Text) => {}
                         _ => {
                             return Err(format!(
                                 "type mismatch: cannot assign {:?} to column '{}'",
@@ -554,6 +555,21 @@ impl Executor {
             .col_index(&expr.left)
             .ok_or_else(|| format!("column '{}' not found", expr.left))?;
         let cell = &row[col_idx];
+
+        // IS NULL / IS NOT NULL — these are the ONLY operators that can
+        // meaningfully interact with NULL.
+        match &expr.op {
+            Op::IsNull    => return Ok(matches!(cell, Value::Null)),
+            Op::IsNotNull => return Ok(!matches!(cell, Value::Null)),
+            _ => {}
+        }
+
+        // SQLite semantics: any standard comparison involving NULL yields
+        // NULL, which is falsy in a WHERE context → return false.
+        if matches!(cell, Value::Null) || matches!(&expr.right, Value::Null) {
+            return Ok(false);
+        }
+
         let result = match (&expr.op, cell, &expr.right) {
             (Op::Eq, Value::Int(a), Value::Int(b)) => a == b,
             (Op::Ne, Value::Int(a), Value::Int(b)) => a != b,
@@ -919,7 +935,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
-    #[test]
     fn test_update_multiple_columns() {
         let dir = tmp_dir("update_multicol");
         let mut e = open_fresh(&dir);
@@ -974,6 +989,137 @@ mod tests {
         // Original row must be untouched after the failed update
         let rows = run(&mut e, "SELECT * FROM t WHERE id = 1");
         assert_eq!(rows[0][1], Value::Text("Short".into()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── NULL handling tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_insert_and_select_null() {
+        let dir = tmp_dir("null_insert");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Alice')");
+        run(&mut e, "INSERT INTO t VALUES (2, NULL)");
+
+        let rows = run(&mut e, "SELECT * FROM t");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][1], Value::Text("Alice".into()));
+        assert_eq!(rows[1][1], Value::Null);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_select_is_null() {
+        let dir = tmp_dir("null_is_null");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Alice')");
+        run(&mut e, "INSERT INTO t VALUES (2, NULL)");
+        run(&mut e, "INSERT INTO t VALUES (3, 'Charlie')");
+
+        let rows = run(&mut e, "SELECT * FROM t WHERE name IS NULL");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], Value::Int(2));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_select_is_not_null() {
+        let dir = tmp_dir("null_is_not_null");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Alice')");
+        run(&mut e, "INSERT INTO t VALUES (2, NULL)");
+        run(&mut e, "INSERT INTO t VALUES (3, 'Charlie')");
+
+        let rows = run(&mut e, "SELECT * FROM t WHERE name IS NOT NULL");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][1], Value::Text("Alice".into()));
+        assert_eq!(rows[1][1], Value::Text("Charlie".into()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_null_equality_never_matches() {
+        // SQLite semantics: NULL = NULL is NOT true
+        let dir = tmp_dir("null_eq");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val INT)");
+        run(&mut e, "INSERT INTO t VALUES (1, NULL)");
+        run(&mut e, "INSERT INTO t VALUES (2, 42)");
+
+        // WHERE val = NULL should match nothing (not even the NULL row)
+        let rows = run(&mut e, "SELECT * FROM t WHERE val = NULL");
+        assert_eq!(rows.len(), 0, "NULL = NULL must not match (SQLite semantics)");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_update_to_null() {
+        let dir = tmp_dir("null_update");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Alice')");
+
+        run(&mut e, "UPDATE t SET name = NULL WHERE id = 1");
+
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 1");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], Value::Null);
+
+        // Verify IS NULL also works on the updated row
+        let null_rows = run(&mut e, "SELECT * FROM t WHERE name IS NULL");
+        assert_eq!(null_rows.len(), 1);
+        assert_eq!(null_rows[0][0], Value::Int(1));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_null_survives_restart() {
+        let dir = tmp_dir("null_restart");
+
+        // Session 1: insert rows with NULL
+        {
+            let mut e = open_fresh(&dir);
+            run(&mut e, "CREATE TABLE t (id INT, name TEXT, score INT)");
+            run(&mut e, "INSERT INTO t VALUES (1, 'Alice', 100)");
+            run(&mut e, "INSERT INTO t VALUES (2, NULL, NULL)");
+            run(&mut e, "INSERT INTO t VALUES (3, 'Charlie', NULL)");
+        }
+
+        // Session 2: data must survive WAL recovery
+        {
+            let mut e = open_fresh(&dir);
+            let rows = run(&mut e, "SELECT * FROM t");
+            assert_eq!(rows.len(), 3, "all rows should survive restart");
+
+            // Row 1: no NULLs
+            assert_eq!(rows[0][0], Value::Int(1));
+            assert_eq!(rows[0][1], Value::Text("Alice".into()));
+            assert_eq!(rows[0][2], Value::Int(100));
+
+            // Row 2: name=NULL, score=NULL
+            assert_eq!(rows[1][0], Value::Int(2));
+            assert_eq!(rows[1][1], Value::Null);
+            assert_eq!(rows[1][2], Value::Null);
+
+            // Row 3: score=NULL
+            assert_eq!(rows[2][0], Value::Int(3));
+            assert_eq!(rows[2][1], Value::Text("Charlie".into()));
+            assert_eq!(rows[2][2], Value::Null);
+
+            // IS NULL filter works after recovery
+            let null_names = run(&mut e, "SELECT * FROM t WHERE name IS NULL");
+            assert_eq!(null_names.len(), 1);
+            assert_eq!(null_names[0][0], Value::Int(2));
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

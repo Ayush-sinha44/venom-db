@@ -31,6 +31,9 @@ impl Schema {
         let mut buf = Vec::new();
         for (col, val) in self.columns.iter().zip(values.iter()) {
             match (&col.ty, val) {
+                (_, Value::Null) => {
+                    buf.push(2u8); // type tag: null (no payload)
+                }
                 (DataType::Int, Value::Int(n)) => {
                     buf.push(0u8); // type tag: int
                     buf.extend(&n.to_le_bytes());
@@ -59,8 +62,13 @@ impl Schema {
             if off >= buf.len() {
                 return Err("unexpected end of row data".into());
             }
-            match (buf[off], &col.ty) {
-                (0, DataType::Int) => {
+            match buf[off] {
+                2 => {
+                    // NULL: tag only, no payload
+                    off += 1;
+                    values.push(Value::Null);
+                }
+                0 if matches!(col.ty, DataType::Int) => {
                     off += 1;
                     let n = i64::from_le_bytes(
                         buf[off..off+8].try_into().map_err(|_| "int read error")?
@@ -68,7 +76,7 @@ impl Schema {
                     off += 8;
                     values.push(Value::Int(n));
                 }
-                (1, DataType::Text) => {
+                1 if matches!(col.ty, DataType::Text) => {
                     off += 1;
                     let len = u32::from_le_bytes(
                         buf[off..off+4].try_into().map_err(|_| "text len error")?
@@ -79,7 +87,7 @@ impl Schema {
                     off += len;
                     values.push(Value::Text(s));
                 }
-                (tag, ty) => return Err(format!("type tag {} doesn't match {:?}", tag, ty)),
+                tag => return Err(format!("type tag {} doesn't match {:?}", tag, col.ty)),
             }
         }
         Ok(values)

@@ -7,7 +7,6 @@ pub enum LockMode {
     Shared,
     Exclusive,
 }
-
 /// One entry in a lock queue for a given resource
 #[derive(Debug, Clone)]
 pub struct LockRequest {

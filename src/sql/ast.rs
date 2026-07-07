@@ -55,6 +55,7 @@ pub enum SelectColumns {
 pub enum Value {
     Int(i64),
     Text(String),
+    Null,
 }
 
 impl std::fmt::Display for Value {
@@ -62,6 +63,7 @@ impl std::fmt::Display for Value {
         match self {
             Value::Int(n)  => write!(f, "{}", n),
             Value::Text(s) => write!(f, "{}", s),
+            Value::Null    => write!(f, "NULL"),
         }
     }
 }
@@ -81,10 +83,12 @@ pub struct Assignment{
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
-    Eq,  // =
-    Ne,  // !=
-    Lt,  // <
-    Gt,  // >
-    Le,  // <=
-    Ge,  // >=
+    Eq,        // =
+    Ne,        // !=
+    Lt,        // <
+    Gt,        // >
+    Le,        // <=
+    Ge,        // >=
+    IsNull,    // IS NULL
+    IsNotNull, // IS NOT NULL
 }

@@ -94,6 +94,7 @@ impl Parser {
             let val = match self.advance().clone() {
                 Token::IntLit(n)  => Value::Int(n),
                 Token::TextLit(s) => Value::Text(s),
+                Token::Null       => Value::Null,
                 t => return Err(format!("expected value, got {:?}", t)),
             };
             values.push(val);
@@ -156,6 +157,19 @@ impl Parser {
     /// col op value  (e.g. age > 18)
     fn parse_expr(&mut self) -> Result<Expr, String> {
         let left = self.expect_ident()?;
+
+        // Handle IS NULL / IS NOT NULL
+        if self.peek() == &Token::Is {
+            self.advance(); // consume IS
+            if self.peek() == &Token::Not {
+                self.advance(); // consume NOT
+                self.expect(&Token::Null)?;
+                return Ok(Expr { left, op: Op::IsNotNull, right: Value::Null });
+            }
+            self.expect(&Token::Null)?;
+            return Ok(Expr { left, op: Op::IsNull, right: Value::Null });
+        }
+
         let op = match self.advance().clone() {
             Token::Eq => Op::Eq,
             Token::Ne => Op::Ne,
@@ -168,6 +182,7 @@ impl Parser {
         let right = match self.advance().clone() {
             Token::IntLit(n)  => Value::Int(n),
             Token::TextLit(s) => Value::Text(s),
+            Token::Null       => Value::Null,
             t => return Err(format!("expected value, got {:?}", t)),
         };
         Ok(Expr { left, op, right })
@@ -184,6 +199,7 @@ impl Parser {
         let value = match self.advance().clone() {
             Token::IntLit(n)  => Value::Int(n),
             Token::TextLit(s) => Value::Text(s),
+            Token::Null       => Value::Null,
             t => return Err(format!("expected value, got {:?}", t)),
         };
         assignments.push(Assignment { column, value });

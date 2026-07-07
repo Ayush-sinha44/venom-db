@@ -6,7 +6,8 @@ pub enum Token {
     // Keywords
     Create, Table, Insert, Into, Values,
     Select, From, Where, Delete,
-    Int, Text,Update,Set,
+    Int, Text, Update, Set,
+    Null, Is, Not,
 
     // Punctuation
     LParen, RParen, Comma, Semicolon, Star,
@@ -137,8 +138,10 @@ impl Lexer {
             "TEXT"   => Token::Text,
             "UPDATE" => Token::Update,
             "SET"    => Token::Set,
+            "NULL"   => Token::Null,
+            "IS"     => Token::Is,
+            "NOT"    => Token::Not,
             _        => Token::Ident(s),
-
         })
     }
 }
