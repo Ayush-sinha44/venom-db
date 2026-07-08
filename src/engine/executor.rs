@@ -148,6 +148,12 @@ impl Executor {
         columns: Vec<ColumnDef>,
     ) -> Result<Vec<Row>, String> {
         let schema = Schema::new(table.clone(), columns);
+
+        // Auto-create BTree index on PRIMARY KEY column
+        if let Some(ref pk_col) = schema.primary_key {
+            self.index_manager.create_index(&table, pk_col);
+        }
+
         self.catalog.create_table(schema)?;
         self.table_pages.insert(table.clone(), TableMeta::default());
 
@@ -169,6 +175,28 @@ impl Executor {
             .get(&table)
             .ok_or_else(|| format!("table '{}' not found", table))?
             .clone();
+
+        // PRIMARY KEY enforcement: reject NULL and duplicate keys
+        if let Some(pk_idx) = schema.pk_col_index() {
+            let pk_val = &values[pk_idx];
+            let pk_col_name = schema.primary_key.as_ref().unwrap();
+
+            // NULL check
+            if matches!(pk_val, Value::Null) {
+                return Err(format!(
+                    "PRIMARY KEY column '{}' cannot be NULL", pk_col_name
+                ));
+            }
+
+            // Duplicate check via index
+            if let Value::Int(key) = pk_val {
+                if self.index_manager.search(&table, pk_col_name, *key).is_some() {
+                    return Err(format!(
+                        "duplicate primary key: {} = {}", pk_col_name, key
+                    ));
+                }
+            }
+        }
 
         let row_bytes = schema.serialize_row(&values)?;
 
@@ -623,13 +651,38 @@ impl Executor {
                 // Save old row values for index maintenance
                 let old_row = row.clone();
 
+                // PRIMARY KEY enforcement on UPDATE
+                if let Some(ref pk_col_name) = schema.primary_key {
+                    for assignment in &assignments {
+                        if &assignment.column == pk_col_name {
+                            // Reject NULL
+                            if matches!(&assignment.value, Value::Null) {
+                                return Err(format!(
+                                    "PRIMARY KEY column '{}' cannot be NULL", pk_col_name
+                                ));
+                            }
+                            // Reject duplicate (if new value differs from old)
+                            if let Value::Int(new_key) = &assignment.value {
+                                let old_matches = matches!(&old_row[schema.pk_col_index().unwrap()], Value::Int(old_k) if old_k == new_key);
+                                if !old_matches {
+                                    if self.index_manager.search(&table, pk_col_name, *new_key).is_some() {
+                                        return Err(format!(
+                                            "duplicate primary key: {} = {}", pk_col_name, new_key
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Apply assignments to the row in memory
                 for assignment in &assignments {
                     let col_idx = schema
                         .col_index(&assignment.column)
                         .ok_or_else(|| format!("column '{}' not found", assignment.column))?;
 
-                    // Type check — NULL is allowed for any column type
+                    // Type check — NULL is allowed for any column type (unless PK, checked above)
                     let col_type = &schema.columns[col_idx].ty;
                     match (&assignment.value, col_type) {
                         (Value::Null, _) => {} // NULL is valid for any column
@@ -1529,5 +1582,122 @@ mod tests {
         assert_eq!(rows[0][1], Value::Text("Alice".into()));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── PRIMARY KEY tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_primary_key_rejects_duplicate() {
+        let dir = tmp_dir("pk_dup");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT PRIMARY KEY, name TEXT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Alice')");
+
+        // Duplicate PK should fail
+        let mut l = Lexer::new("INSERT INTO t VALUES (1, 'Bob')");
+        let tokens = l.tokenize().unwrap();
+        let mut p = Parser::new(tokens);
+        let stmt = p.parse().unwrap();
+        let result = e.execute(stmt);
+        assert!(result.is_err(), "duplicate PK should be rejected");
+        assert!(result.unwrap_err().contains("duplicate primary key"));
+
+        // Original row intact
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 1");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], Value::Text("Alice".into()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_primary_key_rejects_null() {
+        let dir = tmp_dir("pk_null");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT PRIMARY KEY, name TEXT)");
+
+        let mut l = Lexer::new("INSERT INTO t VALUES (NULL, 'Alice')");
+        let tokens = l.tokenize().unwrap();
+        let mut p = Parser::new(tokens);
+        let stmt = p.parse().unwrap();
+        let result = e.execute(stmt);
+        assert!(result.is_err(), "NULL PK should be rejected");
+        assert!(result.unwrap_err().contains("cannot be NULL"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_primary_key_auto_index() {
+        let dir = tmp_dir("pk_auto_idx");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT PRIMARY KEY, val INT)");
+
+        // Index should be auto-created
+        assert!(e.index_manager.has_index("t", "id"));
+
+        run(&mut e, "INSERT INTO t VALUES (10, 100)");
+        run(&mut e, "INSERT INTO t VALUES (20, 200)");
+        run(&mut e, "INSERT INTO t VALUES (30, 300)");
+
+        // Should use index for lookup
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 20");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], Value::Int(200));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_primary_key_allows_unique_inserts() {
+        let dir = tmp_dir("pk_unique");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT PRIMARY KEY, name TEXT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Alice')");
+        run(&mut e, "INSERT INTO t VALUES (2, 'Bob')");
+        run(&mut e, "INSERT INTO t VALUES (3, 'Charlie')");
+
+        let rows = run(&mut e, "SELECT * FROM t ORDER BY id ASC");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0][0], Value::Int(1));
+        assert_eq!(rows[1][0], Value::Int(2));
+        assert_eq!(rows[2][0], Value::Int(3));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_primary_key_update_duplicate_rejected() {
+        let dir = tmp_dir("pk_upd_dup");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT PRIMARY KEY, name TEXT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 'Alice')");
+        run(&mut e, "INSERT INTO t VALUES (2, 'Bob')");
+
+        // Try to update id=2 to id=1 (duplicate)
+        let mut l = Lexer::new("UPDATE t SET id = 1 WHERE id = 2");
+        let tokens = l.tokenize().unwrap();
+        let mut p = Parser::new(tokens);
+        let stmt = p.parse().unwrap();
+        let result = e.execute(stmt);
+        assert!(result.is_err(), "updating to duplicate PK should fail");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_primary_key() {
+        let sql = "CREATE TABLE t (id INT PRIMARY KEY, name TEXT)";
+        let mut l = Lexer::new(sql);
+        let tokens = l.tokenize().unwrap();
+        let mut p = Parser::new(tokens);
+        let stmt = p.parse().unwrap();
+
+        if let Statement::CreateTable { columns, .. } = stmt {
+            assert!(columns[0].primary_key);
+            assert!(!columns[1].primary_key);
+        } else {
+            panic!("expected CreateTable");
+        }
     }
 }

@@ -69,7 +69,14 @@ impl Parser {
                 Token::Text => DataType::Text,
                 t => return Err(format!("expected type, got {:?}", t)),
             };
-            columns.push(ColumnDef { name, ty, primary_key: false });
+            let primary_key = if self.peek() == &Token::Primary {
+                self.advance(); // consume PRIMARY
+                self.expect(&Token::Key)?; // consume KEY
+                true
+            } else {
+                false
+            };
+            columns.push(ColumnDef { name, ty, primary_key });
 
             match self.peek() {
                 Token::Comma  => { self.advance(); }
