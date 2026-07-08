@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
 mod storage;
 mod buffer;
 mod index;
@@ -246,7 +249,7 @@ fn main() {
         let trimmed = line.trim();
 
         match trimmed.to_uppercase().as_str() {
-            "\\QUIT" | "\\Q" | "EXIT" | "QUIT" => { println!("bye."); break; }
+            "\\QUIT" | "\\Q" | "EXIT" | "QUIT" => { println!("bye bro have a great day man!."); break; }
             "\\HELP" | "\\H" => { print_help(); continue; }
             "\\TABLES" => {
                 let tables: Vec<String> = exec.catalog.tables.keys().cloned().collect();
