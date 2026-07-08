@@ -112,6 +112,44 @@ impl Executor {
         // 5. Flush all recovered dirty pages to data.db
         self.buffer_pool.flush_all()?;
 
+        // 6. Rebuild BTree indexes from heap pages
+        for (table_name, col_name) in &self.catalog.index_defs {
+            self.index_manager.create_index(table_name, col_name);
+        }
+        
+        for (table_name, meta) in &self.table_pages {
+            if let Some(schema) = self.catalog.get(table_name) {
+                for &page_id in &meta.page_ids {
+                    // It's safe to fetch without pin here if we unpin immediately
+                    if let Ok(frame_id) = self.buffer_pool.fetch_page(page_id) {
+                        let num_slots = self.buffer_pool.get_page(frame_id)
+                            .map(|p| p.num_slots()).unwrap_or(0);
+                        
+                        for slot_id in 0..num_slots {
+                            let tuple_bytes = self.buffer_pool.get_page(frame_id)
+                                .and_then(|p| p.get_tuple(slot_id)).map(|b| b.to_vec());
+                                
+                            if let Some(tuple) = tuple_bytes {
+                                if let Ok(row) = schema.deserialize_row(&tuple) {
+                                    for col in &schema.columns {
+                                        if self.index_manager.has_index(table_name, &col.name) {
+                                            if let Ok(col_idx) = schema.col_index(&col.name).ok_or(()) {
+                                                if let Value::Int(key) = &row[col_idx] {
+                                                    let rid = crate::index::node::Rid { page_id, slot_id };
+                                                    self.index_manager.insert(table_name, &col.name, *key, rid);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        self.buffer_pool.unpin(frame_id, false);
+                    }
+                }
+            }
+        }
+
         Ok(RecoveryInfo {
             redone: report.redone,
             undone: report.undone,
@@ -154,7 +192,11 @@ impl Executor {
             self.index_manager.create_index(&table, pk_col);
         }
 
-        self.catalog.create_table(schema)?;
+        self.catalog.create_table(schema.clone())?;
+        
+        if let Some(ref pk_col) = schema.primary_key {
+            self.catalog.index_defs.push((table.clone(), pk_col.clone()));
+        }
         self.table_pages.insert(table.clone(), TableMeta::default());
 
         // Persist catalog and empty page list immediately
@@ -1699,5 +1741,37 @@ mod tests {
         } else {
             panic!("expected CreateTable");
         }
+    }
+
+    #[test]
+    fn test_primary_key_and_index_survives_restart() {
+        let dir = tmp_dir("pk_restart");
+        {
+            let mut e = open_fresh(&dir);
+            run(&mut e, "CREATE TABLE t (id INT PRIMARY KEY, val INT)");
+            run(&mut e, "INSERT INTO t VALUES (10, 100)");
+            run(&mut e, "INSERT INTO t VALUES (20, 200)");
+        }
+
+        // Restart
+        {
+            let mut e = Executor::open(&dir).unwrap();
+            e.recover().unwrap();
+
+            // Index lookup should work (proves index survived/rebuilt)
+            let rows = run(&mut e, "SELECT * FROM t WHERE id = 20");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][1], Value::Int(200));
+
+            // Inserting duplicate should fail (proves PK constraint survived)
+            let mut l = Lexer::new("INSERT INTO t VALUES (10, 999)");
+            let tokens = l.tokenize().unwrap();
+            let mut p = Parser::new(tokens);
+            let stmt = p.parse().unwrap();
+            let result = e.execute(stmt);
+            assert!(result.is_err(), "duplicate PK should be rejected after restart");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

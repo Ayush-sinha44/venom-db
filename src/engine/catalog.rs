@@ -105,9 +105,10 @@ impl Schema {
 }
 
 /// The catalog holds all table schemas
-#[derive(Debug, Default)]
+#[derive(Default, Debug, Clone)]
 pub struct Catalog {
     pub tables: HashMap<String, Schema>,
+    pub index_defs: Vec<(String, String)>,
 }
 
 impl Catalog {

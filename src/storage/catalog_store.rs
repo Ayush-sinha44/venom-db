@@ -9,8 +9,8 @@
 ///       [col_name_len: u32][col_name_bytes]
 ///       [type_tag: u8]   (0 = INT, 1 = TEXT)
 ///
-/// This is intentionally simple — no versioning yet. When we add more
-/// types we'll add a file header with a version byte.
+/// This is intentionally simple. V2 adds a magic u32::MAX, a version byte (2),
+/// primary_key flags, and index definitions at the end.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -32,6 +32,10 @@ impl CatalogStore {
     pub fn save(&self, catalog: &Catalog) -> io::Result<()> {
         let mut buf = Vec::new();
 
+        // Write magic number and version
+        buf.extend(&(u32::MAX).to_le_bytes());
+        buf.push(2u8); // version 2
+
         let tables: Vec<&Schema> = catalog.tables.values().collect();
         buf.extend(&(tables.len() as u32).to_le_bytes());
 
@@ -52,7 +56,20 @@ impl CatalogStore {
                     DataType::Text => 1,
                 };
                 buf.push(tag);
+                buf.push(if col.primary_key { 1 } else { 0 });
             }
+        }
+
+        // Index definitions
+        buf.extend(&(catalog.index_defs.len() as u32).to_le_bytes());
+        for (t_name, c_name) in &catalog.index_defs {
+            let t_bytes = t_name.as_bytes();
+            buf.extend(&(t_bytes.len() as u32).to_le_bytes());
+            buf.extend(t_bytes);
+
+            let c_bytes = c_name.as_bytes();
+            buf.extend(&(c_bytes.len() as u32).to_le_bytes());
+            buf.extend(c_bytes);
         }
 
         // Atomic write: write to tmp then rename so a crash mid-write
@@ -109,7 +126,17 @@ impl CatalogStore {
             }};
         }
 
-        let num_tables = read_u32!();
+        let first_u32 = read_u32!();
+        let (version, num_tables) = if first_u32 == u32::MAX {
+            if off >= buf.len() {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "catalog version missing"));
+            }
+            let v = buf[off];
+            off += 1;
+            (v, read_u32!())
+        } else {
+            (1, first_u32)
+        };
 
         for _ in 0..num_tables {
             let table_name = read_str!();
@@ -130,13 +157,34 @@ impl CatalogStore {
                     )),
                 };
                 off += 1;
-                columns.push(ColumnDef { name: col_name, ty, primary_key: false });
+
+                let primary_key = if version >= 2 {
+                    if off >= buf.len() {
+                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "catalog pk flag missing"));
+                    }
+                    let pk = buf[off] == 1;
+                    off += 1;
+                    pk
+                } else {
+                    false
+                };
+
+                columns.push(ColumnDef { name: col_name, ty, primary_key });
             }
 
             // Use insert directly — catalog.create_table() would error on duplicate
             // which we don't want during load.
             let schema = Schema::new(table_name.clone(), columns);
             catalog.tables.insert(table_name, schema);
+        }
+
+        if version >= 2 && off < buf.len() {
+            let num_indexes = read_u32!();
+            for _ in 0..num_indexes {
+                let t_name = read_str!();
+                let c_name = read_str!();
+                catalog.index_defs.push((t_name, c_name));
+            }
         }
 
         Ok(catalog)
@@ -196,5 +244,46 @@ mod tests {
         let store = CatalogStore::new("/tmp/venom_no_such_dir_xyz");
         let catalog = store.load().unwrap();
         assert!(catalog.tables.is_empty());
+    }
+
+    #[test]
+    fn test_v1_backward_compatibility() {
+        let dir = "/tmp/venom_catalog_v1_compat";
+        std::fs::create_dir_all(dir).unwrap();
+        let path = format!("{}/catalog.bin", dir);
+        
+        // Write a V1 catalog file manually
+        let mut f = std::fs::File::create(&path).unwrap();
+        let mut buf = Vec::new();
+        // num_tables = 1
+        buf.extend(&1u32.to_le_bytes());
+        // table name "t"
+        let t_name = "t".as_bytes();
+        buf.extend(&(t_name.len() as u32).to_le_bytes());
+        buf.extend(t_name);
+        // num_cols = 1
+        buf.extend(&1u32.to_le_bytes());
+        // col name "id"
+        let c_name = "id".as_bytes();
+        buf.extend(&(c_name.len() as u32).to_le_bytes());
+        buf.extend(c_name);
+        // type tag 0 (INT)
+        buf.push(0u8);
+        
+        use std::io::Write;
+        f.write_all(&buf).unwrap();
+        f.sync_all().unwrap();
+
+        let store = CatalogStore::new(dir);
+        let catalog = store.load().unwrap();
+        
+        assert_eq!(catalog.tables.len(), 1);
+        let t = catalog.get("t").unwrap();
+        assert_eq!(t.columns.len(), 1);
+        assert_eq!(t.columns[0].name, "id");
+        assert_eq!(t.columns[0].ty, DataType::Int);
+        assert_eq!(t.columns[0].primary_key, false);
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

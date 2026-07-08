@@ -73,7 +73,7 @@ fn extract_table(sql: &str) -> Option<&str> {
 }
 
 fn print_help() {
-    println!("\n  venom-db SQL shell  (v0.7 — Persistent)");
+    println!("\n  ");
     println!("  ──────────────────────────────────────────────");
     println!("  SQL:  CREATE TABLE t (col TYPE, ...)");
     println!("        INSERT INTO t VALUES (v1, v2, ...)");
@@ -148,16 +148,43 @@ fn run_concurrency_demo() {
     println!("  txn 1: completed after txn 2 aborted");
 }
 
+fn print_banner() {
+    println!(r#"
+██╗   ██╗███████╗███╗   ██╗ ██████╗ ███╗   ███╗
+██║   ██║██╔════╝████╗  ██║██╔═══██╗████╗ ████║
+██║   ██║█████╗  ██╔██╗ ██║██║   ██║██╔████╔██║
+╚██╗ ██╔╝██╔══╝  ██║╚██╗██║██║   ██║██║╚██╔╝██║
+ ╚████╔╝ ███████╗██║ ╚████║╚██████╔╝██║ ╚═╝ ██║
+  ╚═══╝  ╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝     ╚═╝
+
+██████╗ ██████╗
+██╔══██╗██╔══██╗
+██║  ██║██████╔╝
+██║  ██║██╔══██╗
+██████╔╝██████╔╝
+╚═════╝ ╚═════╝
+"#);
+}
+
+
+
+
+
+
+
+
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
     let data_dir = "./venom-data";
 
-    println!("╔══════════════════════════════════════════╗");
-    println!("║           venom-db  v0.7                 ║");
-    println!("║   Persistent Storage + WAL Recovery      ║");
-    println!("║   type \\help for usage, \\quit to exit    ║");
-    println!("╚══════════════════════════════════════════╝");
+    // println!("╔══════════════════════════════════════════╗");
+    // println!("║           VENOM-DB                 ║");
+    // println!("║   Persistent Storage + WAL Recovery      ║");
+    // println!("║   type \\help for usage, \\quit to exit    ║");
+    // println!("╚══════════════════════════════════════════╝");
+    print_banner();
 
     // Open database — creates data dir if it doesn't exist
     let mut exec = match Executor::open(data_dir) {
@@ -186,7 +213,7 @@ fn main() {
         }
     }
 
-    run_concurrency_demo();
+    //run_concurrency_demo();
 
     println!("\n━━━ Interactive SQL Shell ━━━");
     println!("  Data directory: {}", data_dir);
