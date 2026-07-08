@@ -1,9 +1,10 @@
 use super::catalog::{Catalog, Schema};
+use super::index_manager::IndexManager;
 use crate::buffer::buffer_pool::BufferPool;
+use crate::index::node::Rid;
 use crate::recovery::wal::WalManager;
 use crate::sql::ast::*;
 use crate::storage::catalog_store::CatalogStore;
-use crate::storage::page::Page;
 use std::collections::HashMap;
 
 /// A row returned from a query
@@ -38,6 +39,8 @@ pub struct Executor {
     wal: WalManager,
     catalog_store: CatalogStore,
     data_dir: String,
+    /// In-memory BTree indexes, keyed by (table, column)
+    pub index_manager: IndexManager,
 }
 
 impl Executor {
@@ -60,6 +63,7 @@ impl Executor {
             wal,
             catalog_store,
             data_dir: data_dir.to_string(),
+            index_manager: IndexManager::new(),
         })
     }
 
@@ -182,6 +186,7 @@ impl Executor {
             .clone();
 
         let mut inserted_page_id: Option<u32> = None;
+        let mut inserted_slot_id: Option<u16> = None;
 
         // Try existing pages
         for &page_id in &meta.page_ids {
@@ -198,17 +203,18 @@ impl Executor {
 
             if has_space {
                 // Log to WAL first (write-ahead guarantee)
-                let _slot_id = self
+                let _wal_slot = self
                     .wal
                     .log_insert(txn_id, page_id, &row_bytes)
                     .map_err(|e| format!("wal insert: {}", e))?;
 
                 // Then modify the buffer pool page
-                if let Some(page) = self.buffer_pool.get_page_mut(frame_id) {
-                    page.insert_tuple(&row_bytes); // slot_id must match WAL
-                }
+                let slot_id = self.buffer_pool.get_page_mut(frame_id)
+                    .and_then(|page| page.insert_tuple(&row_bytes))
+                    .unwrap_or(0);
                 self.buffer_pool.unpin(frame_id, true);
                 inserted_page_id = Some(page_id);
+                inserted_slot_id = Some(slot_id as u16);
                 break;
             }
             self.buffer_pool.unpin(frame_id, false);
@@ -221,14 +227,14 @@ impl Executor {
                 .new_page()
                 .map_err(|e| format!("new page: {}", e))?;
 
-            let _slot_id = self
+            let _wal_slot = self
                 .wal
                 .log_insert(txn_id, page_id, &row_bytes)
                 .map_err(|e| format!("wal insert new page: {}", e))?;
 
-            if let Some(page) = self.buffer_pool.get_page_mut(frame_id) {
-                page.insert_tuple(&row_bytes);
-            }
+            let slot_id = self.buffer_pool.get_page_mut(frame_id)
+                .and_then(|page| page.insert_tuple(&row_bytes))
+                .unwrap_or(0);
             self.buffer_pool.unpin(frame_id, true);
 
             // Register this page with the table
@@ -243,6 +249,19 @@ impl Executor {
                 .map_err(|e| format!("table meta save: {}", e))?;
 
             inserted_page_id = Some(page_id);
+            inserted_slot_id = Some(slot_id as u16);
+        }
+
+        // Maintain indexes: for each indexed column, insert (value, Rid)
+        if let (Some(page_id), Some(slot_id)) = (inserted_page_id, inserted_slot_id) {
+            let rid = Rid { page_id, slot_id };
+            for (col_idx, col) in schema.columns.iter().enumerate() {
+                if self.index_manager.has_index(&table, &col.name) {
+                    if let Value::Int(key) = &values[col_idx] {
+                        self.index_manager.insert(&table, &col.name, *key, rid);
+                    }
+                }
+            }
         }
 
         // Commit: fsync WAL, then flush dirty page to data.db
@@ -283,43 +302,53 @@ impl Executor {
 
         let mut results = Vec::new();
 
-        for &page_id in &meta.page_ids {
-            let frame_id = self
-                .buffer_pool
-                .fetch_page(page_id)
-                .map_err(|e| format!("fetch page {}: {}", page_id, e))?;
+        // Try index-accelerated lookup if WHERE is on an indexed INT column
+        let used_index = if let Some(ref expr) = filter {
+            self.try_index_select(&table, &schema, expr, &columns, &meta, &mut results)?
+        } else {
+            false
+        };
 
-            let num_slots = self
-                .buffer_pool
-                .get_page(frame_id)
-                .map(|p| p.num_slots())
-                .unwrap_or(0);
+        // Fall back to sequential scan if no index was used
+        if !used_index {
+            for &page_id in &meta.page_ids {
+                let frame_id = self
+                    .buffer_pool
+                    .fetch_page(page_id)
+                    .map_err(|e| format!("fetch page {}: {}", page_id, e))?;
 
-            for slot_id in 0..num_slots {
-                let tuple_bytes = self
+                let num_slots = self
                     .buffer_pool
                     .get_page(frame_id)
-                    .and_then(|p| p.get_tuple(slot_id))
-                    .map(|b| b.to_vec());
+                    .map(|p| p.num_slots())
+                    .unwrap_or(0);
 
-                let tuple = match tuple_bytes {
-                    Some(t) => t,
-                    None => continue, // tombstone
-                };
+                for slot_id in 0..num_slots {
+                    let tuple_bytes = self
+                        .buffer_pool
+                        .get_page(frame_id)
+                        .and_then(|p| p.get_tuple(slot_id))
+                        .map(|b| b.to_vec());
 
-                let row = schema.deserialize_row(&tuple)?;
+                    let tuple = match tuple_bytes {
+                        Some(t) => t,
+                        None => continue, // tombstone
+                    };
 
-                if let Some(ref expr) = filter {
-                    if !Self::eval_filter(&schema, &row, expr)? {
-                        continue;
+                    let row = schema.deserialize_row(&tuple)?;
+
+                    if let Some(ref expr) = filter {
+                        if !Self::eval_filter(&schema, &row, expr)? {
+                            continue;
+                        }
                     }
+
+                    let projected = Self::project(&schema, row, &columns)?;
+                    results.push(projected);
                 }
 
-                let projected = Self::project(&schema, row, &columns)?;
-                results.push(projected);
+                self.buffer_pool.unpin(frame_id, false);
             }
-
-            self.buffer_pool.unpin(frame_id, false);
         }
 
         // ORDER BY: sort results by the specified column
@@ -351,6 +380,80 @@ impl Executor {
         }
 
         Ok(results)
+    }
+
+    /// Attempt to use a BTree index for a WHERE clause.
+    /// Returns true if the index was used (results populated), false to fall back to seq scan.
+    fn try_index_select(
+        &mut self,
+        table: &str,
+        schema: &Schema,
+        expr: &Expr,
+        columns: &SelectColumns,
+        meta: &TableMeta,
+        results: &mut Vec<Row>,
+    ) -> Result<bool, String> {
+        // Only works on INT columns with an index
+        if !self.index_manager.has_index(table, &expr.left) {
+            return Ok(false);
+        }
+
+        let rhs = match &expr.right {
+            Value::Int(n) => *n,
+            _ => return Ok(false), // non-INT comparison or NULL: fall back
+        };
+
+        // Collect Rids from the index
+        let rids: Vec<Rid> = match &expr.op {
+            Op::Eq => {
+                match self.index_manager.search(table, &expr.left, rhs) {
+                    Some(rid) => vec![rid],
+                    None => vec![],
+                }
+            }
+            Op::Gt => self.index_manager.range_scan(table, &expr.left, rhs + 1, i64::MAX),
+            Op::Ge => self.index_manager.range_scan(table, &expr.left, rhs, i64::MAX),
+            Op::Lt => self.index_manager.range_scan(table, &expr.left, i64::MIN, rhs - 1),
+            Op::Le => self.index_manager.range_scan(table, &expr.left, i64::MIN, rhs),
+            _ => return Ok(false), // Ne, IsNull, IsNotNull — fall back to seq scan
+        };
+
+        // Fetch the actual tuples from the heap pages using Rids
+        for rid in &rids {
+            // Check the page is part of this table
+            if !meta.page_ids.contains(&rid.page_id) {
+                continue;
+            }
+            let frame_id = self
+                .buffer_pool
+                .fetch_page(rid.page_id)
+                .map_err(|e| format!("fetch page {}: {}", rid.page_id, e))?;
+
+            let tuple_bytes = self
+                .buffer_pool
+                .get_page(frame_id)
+                .and_then(|p| p.get_tuple(rid.slot_id))
+                .map(|b| b.to_vec());
+
+            self.buffer_pool.unpin(frame_id, false);
+
+            let tuple = match tuple_bytes {
+                Some(t) => t,
+                None => continue, // tombstone — index is stale
+            };
+
+            let row = schema.deserialize_row(&tuple)?;
+
+            // Double-check the filter (index may have stale entries)
+            if !Self::eval_filter(schema, &row, expr)? {
+                continue;
+            }
+
+            let projected = Self::project(schema, row, columns)?;
+            results.push(projected);
+        }
+
+        Ok(true)
     }
 
     // ─── DELETE ──────────────────────────────────────────────────────────────
@@ -418,6 +521,16 @@ impl Executor {
                     if let Some(page) = self.buffer_pool.get_page_mut(frame_id) {
                         page.delete_tuple(slot_id);
                     }
+
+                    // Remove from indexes
+                    for (col_idx, col) in schema.columns.iter().enumerate() {
+                        if self.index_manager.has_index(&table, &col.name) {
+                            if let Value::Int(key) = &row[col_idx] {
+                                self.index_manager.delete(&table, &col.name, *key);
+                            }
+                        }
+                    }
+
                     page_dirty = true;
                 }
             }
@@ -507,6 +620,9 @@ impl Executor {
                     continue;
                 }
 
+                // Save old row values for index maintenance
+                let old_row = row.clone();
+
                 // Apply assignments to the row in memory
                 for assignment in &assignments {
                     let col_idx = schema
@@ -554,6 +670,19 @@ impl Executor {
                         "UPDATE failed: new value for row is larger than original \
          (in-place update only supported for same-size or smaller values)"
                     ));
+                }
+
+                // Maintain indexes: remove old key, insert new key
+                let rid = Rid { page_id, slot_id: slot_id as u16 };
+                for (col_idx, col) in schema.columns.iter().enumerate() {
+                    if self.index_manager.has_index(&table, &col.name) {
+                        if let Value::Int(old_key) = &old_row[col_idx] {
+                            self.index_manager.delete(&table, &col.name, *old_key);
+                        }
+                        if let Value::Int(new_key) = &row[col_idx] {
+                            self.index_manager.insert(&table, &col.name, *new_key, rid);
+                        }
+                    }
                 }
 
                 page_dirty = true;
@@ -1275,6 +1404,129 @@ mod tests {
         assert_eq!(rows[0][1], Value::Text("Alice".into()));
         assert_eq!(rows[1][1], Value::Text("Bob".into()));
         assert_eq!(rows[2][1], Value::Text("Charlie".into()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── Index tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_index_eq_lookup() {
+        let dir = tmp_dir("idx_eq");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT, score INT)");
+
+        // Manually create index on 'id' column
+        e.index_manager.create_index("t", "id");
+
+        run(&mut e, "INSERT INTO t VALUES (10, 'Alice', 100)");
+        run(&mut e, "INSERT INTO t VALUES (20, 'Bob', 200)");
+        run(&mut e, "INSERT INTO t VALUES (30, 'Charlie', 300)");
+
+        // Eq lookup via index
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 20");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], Value::Int(20));
+        assert_eq!(rows[0][1], Value::Text("Bob".into()));
+
+        // Non-existent key
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 99");
+        assert_eq!(rows.len(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_index_range_lookup() {
+        let dir = tmp_dir("idx_range");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val INT)");
+        e.index_manager.create_index("t", "id");
+
+        for i in 1..=10 {
+            run(&mut e, &format!("INSERT INTO t VALUES ({}, {})", i, i * 10));
+        }
+
+        // Gt: id > 7 → 8, 9, 10
+        let rows = run(&mut e, "SELECT * FROM t WHERE id > 7 ORDER BY id ASC");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0][0], Value::Int(8));
+        assert_eq!(rows[2][0], Value::Int(10));
+
+        // Le: id <= 3 → 1, 2, 3
+        let rows = run(&mut e, "SELECT * FROM t WHERE id <= 3 ORDER BY id ASC");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0][0], Value::Int(1));
+        assert_eq!(rows[2][0], Value::Int(3));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_index_maintained_on_delete() {
+        let dir = tmp_dir("idx_del");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val INT)");
+        e.index_manager.create_index("t", "id");
+
+        run(&mut e, "INSERT INTO t VALUES (1, 100)");
+        run(&mut e, "INSERT INTO t VALUES (2, 200)");
+        run(&mut e, "INSERT INTO t VALUES (3, 300)");
+
+        // Delete row with id=2
+        run(&mut e, "DELETE FROM t WHERE id = 2");
+
+        // Index lookup for id=2 should return nothing
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 2");
+        assert_eq!(rows.len(), 0);
+
+        // Other rows still accessible via index
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 1");
+        assert_eq!(rows.len(), 1);
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 3");
+        assert_eq!(rows.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_index_maintained_on_update() {
+        let dir = tmp_dir("idx_upd");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val INT)");
+        e.index_manager.create_index("t", "val");
+
+        run(&mut e, "INSERT INTO t VALUES (1, 100)");
+        run(&mut e, "INSERT INTO t VALUES (2, 200)");
+
+        // Update val from 100 to 999
+        run(&mut e, "UPDATE t SET val = 999 WHERE id = 1");
+
+        // Old key gone from index
+        let rows = run(&mut e, "SELECT * FROM t WHERE val = 100");
+        assert_eq!(rows.len(), 0);
+
+        // New key present in index
+        let rows = run(&mut e, "SELECT * FROM t WHERE val = 999");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], Value::Int(1));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_index_with_no_index_falls_back_to_seqscan() {
+        // When no index exists, seq scan should still work correctly
+        let dir = tmp_dir("idx_fallback");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, name TEXT)");
+        // No index created
+        run(&mut e, "INSERT INTO t VALUES (1, 'Alice')");
+        run(&mut e, "INSERT INTO t VALUES (2, 'Bob')");
+
+        let rows = run(&mut e, "SELECT * FROM t WHERE id = 1");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], Value::Text("Alice".into()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
