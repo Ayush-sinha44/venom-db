@@ -188,7 +188,9 @@ fn main() {
     // println!("║   type \\help for usage, \\quit to exit    ║");
     // println!("╚══════════════════════════════════════════╝");
     print_banner();
-
+    println!();
+    println!();
+    println!("Developed by Ayush Sinha : github link: https://github.com/Ayush-sinha44 ");
     // Open database — creates data dir if it doesn't exist
     let mut exec = match Executor::open(data_dir) {
         Ok(e) => e,
