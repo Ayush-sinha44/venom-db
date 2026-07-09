@@ -9,6 +9,7 @@ pub enum Token {
     Int, Text, Update, Set,
     Null, Is, Not,
     Order, By, Asc, Desc, Limit,
+    Primary, Key,
 
     // Punctuation
     LParen, RParen, Comma, Semicolon, Star,
@@ -147,6 +148,8 @@ impl Lexer {
             "ASC"    => Token::Asc,
             "DESC"   => Token::Desc,
             "LIMIT"  => Token::Limit,
+            "PRIMARY" => Token::Primary,
+            "KEY"    => Token::Key,
             _        => Token::Ident(s),
         })
     }

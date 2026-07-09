@@ -69,7 +69,14 @@ impl Parser {
                 Token::Text => DataType::Text,
                 t => return Err(format!("expected type, got {:?}", t)),
             };
-            columns.push(ColumnDef { name, ty });
+            let primary_key = if self.peek() == &Token::Primary {
+                self.advance(); // consume PRIMARY
+                self.expect(&Token::Key)?; // consume KEY
+                true
+            } else {
+                false
+            };
+            columns.push(ColumnDef { name, ty, primary_key });
 
             match self.peek() {
                 Token::Comma  => { self.advance(); }
@@ -325,6 +332,56 @@ mod tests {
         if let Statement::Delete { table, filter } = s {
             assert_eq!(table, "users");
             assert!(filter.is_some());
+        }
+    }
+
+    #[test]
+    fn test_parse_order_by_desc() {
+        let s = parse("SELECT * FROM users ORDER BY age DESC");
+        if let Statement::Select { order_by, limit, .. } = s {
+            let (col, dir) = order_by.unwrap();
+            assert_eq!(col, "age");
+            assert_eq!(dir, OrderDir::Desc);
+            assert!(limit.is_none());
+        } else {
+            panic!("expected Select");
+        }
+    }
+
+    #[test]
+    fn test_parse_order_by_asc_default() {
+        let s = parse("SELECT * FROM users ORDER BY name");
+        if let Statement::Select { order_by, .. } = s {
+            let (col, dir) = order_by.unwrap();
+            assert_eq!(col, "name");
+            assert_eq!(dir, OrderDir::Asc); // default
+        } else {
+            panic!("expected Select");
+        }
+    }
+
+    #[test]
+    fn test_parse_limit() {
+        let s = parse("SELECT * FROM users LIMIT 5");
+        if let Statement::Select { order_by, limit, .. } = s {
+            assert!(order_by.is_none());
+            assert_eq!(limit, Some(5));
+        } else {
+            panic!("expected Select");
+        }
+    }
+
+    #[test]
+    fn test_parse_order_by_with_limit() {
+        let s = parse("SELECT * FROM users WHERE age > 18 ORDER BY age DESC LIMIT 10");
+        if let Statement::Select { filter, order_by, limit, .. } = s {
+            assert!(filter.is_some());
+            let (col, dir) = order_by.unwrap();
+            assert_eq!(col, "age");
+            assert_eq!(dir, OrderDir::Desc);
+            assert_eq!(limit, Some(10));
+        } else {
+            panic!("expected Select");
         }
     }
 }

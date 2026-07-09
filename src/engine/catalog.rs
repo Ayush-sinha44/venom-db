@@ -7,16 +7,26 @@ use crate::sql::ast::{ColumnDef, DataType, Value};
 pub struct Schema {
     pub name: String,
     pub columns: Vec<ColumnDef>,
+    /// Name of the primary key column, if any
+    pub primary_key: Option<String>,
 }
 
 impl Schema {
     pub fn new(name: String, columns: Vec<ColumnDef>) -> Self {
-        Self { name, columns }
+        let primary_key = columns.iter()
+            .find(|c| c.primary_key)
+            .map(|c| c.name.clone());
+        Self { name, columns, primary_key }
     }
 
     /// Column index by name
     pub fn col_index(&self, name: &str) -> Option<usize> {
         self.columns.iter().position(|c| c.name == name)
+    }
+
+    /// Primary key column index, if any
+    pub fn pk_col_index(&self) -> Option<usize> {
+        self.primary_key.as_ref().and_then(|pk| self.col_index(pk))
     }
 
     /// Serialize a row of Values into bytes for storage
@@ -95,9 +105,10 @@ impl Schema {
 }
 
 /// The catalog holds all table schemas
-#[derive(Debug, Default)]
+#[derive(Default, Debug, Clone)]
 pub struct Catalog {
     pub tables: HashMap<String, Schema>,
+    pub index_defs: Vec<(String, String)>,
 }
 
 impl Catalog {
@@ -122,9 +133,9 @@ mod tests {
 
     fn make_schema() -> Schema {
         Schema::new("users".into(), vec![
-            ColumnDef { name: "id".into(),   ty: DataType::Int },
-            ColumnDef { name: "name".into(), ty: DataType::Text },
-            ColumnDef { name: "age".into(),  ty: DataType::Int },
+            ColumnDef { name: "id".into(),   ty: DataType::Int,  primary_key: false },
+            ColumnDef { name: "name".into(), ty: DataType::Text, primary_key: false },
+            ColumnDef { name: "age".into(),  ty: DataType::Int,  primary_key: false },
         ])
     }
 
