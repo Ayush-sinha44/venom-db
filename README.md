@@ -5,7 +5,7 @@
 ![Venom-db in action](assets/readme1.png)
 ![Venom-db in action](assets/readme2.png)
 
-venom-db is a relational database engine built entirely from scratch in Rust — no external storage libraries, no borrowed query engines, no shortcuts. Every layer, from the on-disk page format to the SQL parser to the Write-Ahead Log, is hand-built and purpose-designed.
+venom-db is a relational database engine built entirely from scratch in Rust — no external storage libraries, no borrowed query engines, no shortcuts. Every layer, from the on-disk page format to the SQL parser to the Write-Ahead Log, is purpose-designed.
 
 The goal is an embedded database in the spirit of SQLite: a single-file, in-process store that ships with your application, requires no server, and provides full ACID guarantees. The long-term target is to serve as the storage layer for on-device AI applications — local RAG pipelines, personal AI assistants, and offline agents that need durable relational storage and vector similarity search in one engine, without a cloud dependency.
 
