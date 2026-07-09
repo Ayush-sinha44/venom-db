@@ -190,7 +190,7 @@ The LockManager maintains a lock table keyed by (table, row) pairs. Each entry t
 ### Build and Run
 
 ```bash
-git clone https://github.com/Ayush-sinha44/venom-db
+git clone https://github.com/Ayush-sinha44/venom-db.git
 cd venom-db
 cargo build --release
 cargo run
@@ -199,12 +199,12 @@ cargo run
 This starts the venom-db interactive shell. You can type SQL directly:
 
 ```
-venom> CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER);
-venom> INSERT INTO products VALUES (1, 'keyboard', 2999);
-venom> INSERT INTO products VALUES (2, 'monitor', 14999);
-venom> SELECT * FROM products WHERE price > 5000;
-venom> UPDATE products SET price = 3499 WHERE id = 1;
-venom> SELECT * FROM products ORDER BY price DESC;
+venom-db> CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER);
+venom-db> INSERT INTO products VALUES (1, 'keyboard', 2999);
+venom-db> INSERT INTO products VALUES (2, 'monitor', 14999);
+venom-db> SELECT * FROM products WHERE price > 5000;
+venom-db> UPDATE products SET price = 3499 WHERE id = 1;
+venom-db> SELECT * FROM products ORDER BY price DESC;
 ```
 
 Data is persisted to `data.db` and `venom.wal` in the working directory. On the next run, the database recovers automatically from the WAL and catalog files.
@@ -215,24 +215,67 @@ Data is persisted to `data.db` and `venom.wal` in the working directory. On the 
 
 ```
 venom-db/
-├── src/
-│   ├── main.rs               # Entry point, REPL shell
-│   ├── sql/                  # Lexer, Parser, AST definitions
-│   ├── engine/
-│   │   └── executor.rs       # Query execution, index routing
-│   ├── storage/
-│   │   ├── buffer_pool.rs    # Page cache, dirty tracking, eviction
-│   │   ├── page.rs           # Slotted page format, row encoding
-│   │   └── catalog_store.rs  # Binary catalog serialization
-│   ├── recovery/
-│   │   └── wal.rs            # WAL append, crash recovery replay
-│   └── concurrency/
-│       └── lock_manager.rs   # 2PL, wait-for graph, deadlock detection
-├── assets/
-│   └── venomdb1.png
-├── data.db                   # Persistent heap pages (generated at runtime)
-├── venom.wal                 # Write-ahead log (generated at runtime)
-└── Cargo.toml
+├── assets
+│   ├── readme1.png
+│   └── readme2.png
+├── Cargo.lock
+├── Cargo.toml
+├── database.db
+├── README.md
+├── src
+│   ├── buffer
+│   │   ├── buffer_pool.rs
+│   │   ├── frame.rs
+│   │   ├── lru_replacer.rs
+│   │   └── mod.rs
+│   ├── concurrency
+│   │   ├── lock_manager.rs
+│   │   ├── mod.rs
+│   │   └── transaction.rs
+│   ├── engine
+│   │   ├── catalog.rs
+│   │   ├── executor.rs
+│   │   ├── index_manager.rs
+│   │   └── mod.rs
+│   ├── index
+│   │   ├── btree.rs
+│   │   ├── mod.rs
+│   │   └── node.rs
+│   ├── main.rs
+│   ├── recovery
+│   │   ├── log_record.rs
+│   │   ├── mod.rs
+│   │   └── wal.rs
+│   ├── sql
+│   │   ├── ast.rs
+│   │   ├── lexer.rs
+│   │   ├── mod.rs
+│   │   └── parser.rs
+│   └── storage
+│       ├── catalog_store.rs
+│       ├── disk_manager.rs
+│       ├── mod.rs
+│       └── page.rs
+├── target
+│   ├── CACHEDIR.TAG
+│   ├── debug
+│   │   ├── build
+│   │   ├── deps
+│   │   ├── examples
+│   │   ├── incremental
+│   │   ├── venom-db
+│   │   └── venom-db.d
+│   └── flycheck0
+│       ├── stderr
+│       └── stdout
+├── venom-data
+│   ├── catalog.bin
+│   ├── data.db
+│   ├── employee.pages
+│   ├── people.pages
+│   ├── users.pages
+│   └── venom.wal
+└── venom.db
 ```
 
 ---
