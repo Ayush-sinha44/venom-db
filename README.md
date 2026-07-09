@@ -280,19 +280,20 @@ venom-db/
 
 ---
 
+
 ## Test Coverage
 
-venom-db ships with an integration test suite covering the full query lifecycle end-to-end:
+venom-db ships with a comprehensive test suite covering every layer of the engine independently and end-to-end:
 
-- Storage layer: page allocation, slot management, row encoding/decoding
-- Buffer pool: page pinning, dirty eviction, flush correctness
-- B-Tree: insertion, lookup, range scan, split correctness
-- WAL: log append, crash simulation, redo/undo recovery
-- SQL engine: full query parsing and execution for all supported statements
-- Concurrency: 2PL acquisition, lock conflict, deadlock detection and victim selection
-- Persistence: multi-restart correctness with WAL replay
+- **Buffer Pool & LRU Replacer**: page allocation, fetch, hit rate tracking, dirty page flush before eviction, LRU eviction order, pin/unpin correctness
+- **Concurrency (Lock Manager)**: shared lock compatibility, exclusive lock blocking, deadlock detection and victim selection, lock release and grant to waiters, transaction re-acquisition of own locks, independent row isolation
+- **Catalog**: schema serialization roundtrip, column index resolution, type mismatch error handling, backward compatibility with v1 catalog format
+- **B-Tree Index**: insertion and search, range scan, cross-leaf range scan, node deletion, large insert forcing splits, serialization roundtrip
+- **WAL & Recovery**: log serialization roundtrip, commit survives restart, multiple commits, uncommitted transaction rollback, UPDATE redo on restart, UPDATE undo on incomplete transaction, multiple updates undone in reverse order, mixed committed and crashed transaction replay
+- **SQL Frontend**: lexer tokenization for SELECT, string literals, operators; parser correctness for CREATE, INSERT, UPDATE, DELETE, SELECT with WHERE, ORDER BY (ASC/DESC), LIMIT
+- **Execution Engine**: index equality and range lookup, index maintained on UPDATE and DELETE, sequential scan fallback when no index, ORDER BY (ASC, DESC, text, with/without WHERE, with/without LIMIT), LIMIT, NULL insert and select, IS NULL / IS NOT NULL, NULL equality semantics, primary key enforcement (duplicate rejection, NULL rejection, unique inserts, auto-index), UPDATE (basic, multi-column, no WHERE, no matching rows, text shrink, rollback after crash, buffer pool pressure survival), multi-restart correctness, schema/index/data/delete persistence across restarts
 
-**56 tests passing.**
+**87 tests passing.**
 
 ---
 
@@ -308,7 +309,7 @@ Once these land, the target use case becomes concrete: a local RAG application w
 
 Further out:
 
-- [ ] NULL handling and NOT NULL constraints
+
 - [ ] FLOAT, BOOLEAN column types
 - [ ] WAL checkpointing and log truncation
 - [ ] MVCC for reader/writer non-blocking concurrency
