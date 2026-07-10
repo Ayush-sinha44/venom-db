@@ -51,6 +51,7 @@ pub enum OrderDir {
 pub enum DataType {
     Int,
     Text,
+    Float,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +66,7 @@ pub enum SelectColumns {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
+    Float(f64),
     Text(String),
     Null,
 }
@@ -72,9 +74,23 @@ pub enum Value {
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Value::Int(n)  => write!(f, "{}", n),
-            Value::Text(s) => write!(f, "{}", s),
-            Value::Null    => write!(f, "NULL"),
+            Value::Int(n)   => write!(f, "{}", n),
+            Value::Float(n) => write!(f, "{}", n),
+            Value::Text(s)  => write!(f, "{}", s),
+            Value::Null     => write!(f, "NULL"),
+        }
+    }
+}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
+            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+            (Value::Int(a), Value::Float(b)) => (*a as f64).partial_cmp(b),
+            (Value::Float(a), Value::Int(b)) => a.partial_cmp(&(*b as f64)),
+            (Value::Text(a), Value::Text(b)) => a.partial_cmp(b),
+            _ => None,
         }
     }
 }

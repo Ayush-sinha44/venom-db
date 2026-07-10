@@ -67,6 +67,7 @@ impl Parser {
             let ty = match self.advance().clone() {
                 Token::Int  => DataType::Int,
                 Token::Text => DataType::Text,
+                Token::Float => DataType::Float,
                 t => return Err(format!("expected type, got {:?}", t)),
             };
             let primary_key = if self.peek() == &Token::Primary {
@@ -100,6 +101,7 @@ impl Parser {
         loop {
             let val = match self.advance().clone() {
                 Token::IntLit(n)  => Value::Int(n),
+                Token::FloatLit(f) => Value::Float(f),
                 Token::TextLit(s) => Value::Text(s),
                 Token::Null       => Value::Null,
                 t => return Err(format!("expected value, got {:?}", t)),
@@ -214,6 +216,7 @@ impl Parser {
         };
         let right = match self.advance().clone() {
             Token::IntLit(n)  => Value::Int(n),
+            Token::FloatLit(f) => Value::Float(f),
             Token::TextLit(s) => Value::Text(s),
             Token::Null       => Value::Null,
             t => return Err(format!("expected value, got {:?}", t)),
@@ -231,6 +234,7 @@ impl Parser {
         self.expect(&Token::Eq)?;
         let value = match self.advance().clone() {
             Token::IntLit(n)  => Value::Int(n),
+            Token::FloatLit(f) => Value::Float(f),
             Token::TextLit(s) => Value::Text(s),
             Token::Null       => Value::Null,
             t => return Err(format!("expected value, got {:?}", t)),

@@ -54,6 +54,7 @@ impl CatalogStore {
                 let tag: u8 = match col.ty {
                     DataType::Int  => 0,
                     DataType::Text => 1,
+                    DataType::Float => 2,
                 };
                 buf.push(tag);
                 buf.push(if col.primary_key { 1 } else { 0 });
@@ -151,6 +152,7 @@ impl CatalogStore {
                 let ty = match buf[off] {
                     0 => DataType::Int,
                     1 => DataType::Text,
+                    2 => DataType::Float,
                     t => return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("unknown type tag {} in catalog", t),

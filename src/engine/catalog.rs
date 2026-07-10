@@ -48,6 +48,10 @@ impl Schema {
                     buf.push(0u8); // type tag: int
                     buf.extend(&n.to_le_bytes());
                 }
+                (DataType::Float, Value::Float(f)) => {
+                    buf.push(3u8); // type tag: float
+                    buf.extend(&f.to_le_bytes());
+                }
                 (DataType::Text, Value::Text(s)) => {
                     buf.push(1u8); // type tag: text
                     let bytes = s.as_bytes();
@@ -85,6 +89,14 @@ impl Schema {
                     );
                     off += 8;
                     values.push(Value::Int(n));
+                }
+                3 if matches!(col.ty, DataType::Float) => {
+                    off += 1;
+                    let f = f64::from_le_bytes(
+                        buf[off..off+8].try_into().map_err(|_| "float read error")?
+                    );
+                    off += 8;
+                    values.push(Value::Float(f));
                 }
                 1 if matches!(col.ty, DataType::Text) => {
                     off += 1;

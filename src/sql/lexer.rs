@@ -6,7 +6,7 @@ pub enum Token {
     // Keywords
     Create, Table, Insert, Into, Values,
     Select, From, Where, Delete,
-    Int, Text, Update, Set,
+    Int, Text, Float, Update, Set,
     Null, Is, Not,
     Order, By, Asc, Desc, Limit,
     Primary, Key,
@@ -20,6 +20,7 @@ pub enum Token {
     // Literals / identifiers
     Ident(String),
     IntLit(i64),
+    FloatLit(f64),
     TextLit(String),
 
     Eof,
@@ -113,12 +114,21 @@ impl Lexer {
     fn read_number(&mut self) -> Result<Token, String> {
         let mut s = String::new();
         if self.peek() == Some('-') { s.push('-'); self.advance(); }
-        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-            s.push(self.advance().unwrap());
+        let mut is_float = false;
+        while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == '.') {
+            let c = self.advance().unwrap();
+            if c == '.' { is_float = true; }
+            s.push(c);
         }
-        s.parse::<i64>()
-            .map(Token::IntLit)
-            .map_err(|_| format!("invalid number: {}", s))
+        if is_float {
+            s.parse::<f64>()
+                .map(Token::FloatLit)
+                .map_err(|_| format!("invalid float: {}", s))
+        } else {
+            s.parse::<i64>()
+                .map(Token::IntLit)
+                .map_err(|_| format!("invalid number: {}", s))
+        }
     }
 
     fn read_ident_or_keyword(&mut self) -> Result<Token, String> {
@@ -138,6 +148,7 @@ impl Lexer {
             "DELETE" => Token::Delete,
             "INT"    => Token::Int,
             "TEXT"   => Token::Text,
+            "FLOAT"  => Token::Float,
             "UPDATE" => Token::Update,
             "SET"    => Token::Set,
             "NULL"   => Token::Null,

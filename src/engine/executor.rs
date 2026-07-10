@@ -856,22 +856,23 @@ impl Executor {
             return Ok(false);
         }
 
-        let result = match (&expr.op, cell, &expr.right) {
-            (Op::Eq, Value::Int(a), Value::Int(b)) => a == b,
-            (Op::Ne, Value::Int(a), Value::Int(b)) => a != b,
-            (Op::Lt, Value::Int(a), Value::Int(b)) => a < b,
-            (Op::Gt, Value::Int(a), Value::Int(b)) => a > b,
-            (Op::Le, Value::Int(a), Value::Int(b)) => a <= b,
-            (Op::Ge, Value::Int(a), Value::Int(b)) => a >= b,
-            (Op::Eq, Value::Text(a), Value::Text(b)) => a == b,
-            (Op::Ne, Value::Text(a), Value::Text(b)) => a != b,
-            _ => {
-                return Err(format!(
-                    "type mismatch in WHERE: {:?} {:?} {:?}",
-                    cell, expr.op, expr.right
-                ));
-            }
+        let cmp_ord = cell.partial_cmp(&expr.right);
+        let result = match &expr.op {
+            Op::Eq => cmp_ord == Some(std::cmp::Ordering::Equal),
+            Op::Ne => cmp_ord.is_some() && cmp_ord != Some(std::cmp::Ordering::Equal),
+            Op::Lt => cmp_ord == Some(std::cmp::Ordering::Less),
+            Op::Gt => cmp_ord == Some(std::cmp::Ordering::Greater),
+            Op::Le => cmp_ord == Some(std::cmp::Ordering::Less) || cmp_ord == Some(std::cmp::Ordering::Equal),
+            Op::Ge => cmp_ord == Some(std::cmp::Ordering::Greater) || cmp_ord == Some(std::cmp::Ordering::Equal),
+            _ => return Err(format!("unsupported operator: {:?}", expr.op)),
         };
+        // If cmp_ord is None and we didn't match something that could handle it, it's a type mismatch
+        if cmp_ord.is_none() {
+            return Err(format!(
+                "type mismatch in WHERE: {:?} {:?} {:?}",
+                cell, expr.op, expr.right
+            ));
+        }
         Ok(result)
     }
 
@@ -883,9 +884,7 @@ impl Executor {
             (Value::Null, Value::Null) => Ordering::Equal,
             (Value::Null, _)          => Ordering::Greater, // NULL sorts last
             (_, Value::Null)          => Ordering::Less,
-            (Value::Int(x), Value::Int(y))   => x.cmp(y),
-            (Value::Text(x), Value::Text(y)) => x.cmp(y),
-            _ => Ordering::Equal, // mixed types: treat as equal
+            (a, b) => a.partial_cmp(b).unwrap_or(Ordering::Less),
         }
     }
 
@@ -1865,4 +1864,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn test_float_insert_and_select() {
+        let dir = tmp_dir("float_ins_sel");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val FLOAT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 3.14)");
+        run(&mut e, "INSERT INTO t VALUES (2, -0.5)");
+
+        let rows = run(&mut e, "SELECT * FROM t");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][1], Value::Float(3.14));
+        assert_eq!(rows[1][1], Value::Float(-0.5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_float_order_by() {
+        let dir = tmp_dir("float_order_by");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val FLOAT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 3.14)");
+        run(&mut e, "INSERT INTO t VALUES (2, -0.5)");
+        run(&mut e, "INSERT INTO t VALUES (3, 10.0)");
+        run(&mut e, "INSERT INTO t VALUES (4, 0.0)");
+
+        let rows = run(&mut e, "SELECT * FROM t ORDER BY val ASC");
+        assert_eq!(rows[0][1], Value::Float(-0.5));
+        assert_eq!(rows[1][1], Value::Float(0.0));
+        assert_eq!(rows[2][1], Value::Float(3.14));
+        assert_eq!(rows[3][1], Value::Float(10.0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_float_where_filter() {
+        let dir = tmp_dir("float_where");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val FLOAT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 3.14)");
+        run(&mut e, "INSERT INTO t VALUES (2, 5.0)");
+
+        let rows = run(&mut e, "SELECT * FROM t WHERE val > 4.0");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], Value::Float(5.0));
+
+        // Mixed type comparison (int vs float)
+        let rows2 = run(&mut e, "SELECT * FROM t WHERE val < 4");
+        assert_eq!(rows2.len(), 1);
+        assert_eq!(rows2[0][1], Value::Float(3.14));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_float_survives_restart() {
+        let dir = tmp_dir("float_restart");
+        {
+            let mut e = open_fresh(&dir);
+            run(&mut e, "CREATE TABLE t (id INT, val FLOAT)");
+            run(&mut e, "INSERT INTO t VALUES (1, 2.718)");
+        }
+        {
+            let mut e = Executor::open(&dir).unwrap();
+            e.recover().unwrap();
+            let rows = run(&mut e, "SELECT * FROM t");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][1], Value::Float(2.718));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_float_null_mixed() {
+        let dir = tmp_dir("float_null");
+        let mut e = open_fresh(&dir);
+        run(&mut e, "CREATE TABLE t (id INT, val FLOAT)");
+        run(&mut e, "INSERT INTO t VALUES (1, 1.1)");
+        run(&mut e, "INSERT INTO t VALUES (2, NULL)");
+        run(&mut e, "INSERT INTO t VALUES (3, -1.1)");
+
+        let rows = run(&mut e, "SELECT * FROM t ORDER BY val ASC");
+        assert_eq!(rows[0][1], Value::Float(-1.1));
+        assert_eq!(rows[1][1], Value::Float(1.1));
+        assert_eq!(rows[2][1], Value::Null);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
