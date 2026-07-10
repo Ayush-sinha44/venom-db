@@ -67,8 +67,6 @@ venom-db maintains in-memory B-Tree indexes for accelerated lookups. The executo
 
 Indexes are registered in the catalog and rebuilt from heap pages on every startup, since the index lives in memory and the WAL-recovered heap pages are the source of truth.
 
-### FLOAT Column Type
-Native `64`-bit floating-point storage for numeric data requiring decimal precision. Columns declared as FLOAT store values as IEEE 754 f64, serialized directly into slotted pages as 8-byte little-endian encoding. `FLOAT` values survive WAL recovery and catalog restarts identically to `INT` and `TEXT` columns. The executor handles cross-type comparisons between `FLOAT` and `INT` transparently, casting integers to f64 at evaluation time. ORDER BY correctly sorts float columns, and NaN values are treated as less than all other values to guarantee a stable sort order.
 
 ```sql
 -- This uses the B-Tree index on `id` automatically
@@ -77,6 +75,10 @@ SELECT * FROM users WHERE id = 42;
 -- Range queries also route through the index
 SELECT * FROM users WHERE id > 100;
 ```
+
+
+### FLOAT Column Type
+Native `64`-bit floating-point storage for numeric data requiring decimal precision. Columns declared as FLOAT store values as IEEE 754 f64, serialized directly into slotted pages as 8-byte little-endian encoding. `FLOAT` values survive WAL recovery and catalog restarts identically to `INT` and `TEXT` columns. The executor handles cross-type comparisons between `FLOAT` and `INT` transparently, casting integers to f64 at evaluation time. ORDER BY correctly sorts float columns, and NaN values are treated as less than all other values to guarantee a stable sort order.
 
 ### Write-Ahead Logging (WAL)
 
