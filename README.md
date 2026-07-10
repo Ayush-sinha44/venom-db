@@ -308,9 +308,8 @@ venom-db ships with a comprehensive test suite covering every layer of the engin
 
 ## Roadmap
 
-The immediate next milestone is native vector search support, positioning venom-db as the storage layer for on-device AI applications.
+The immediate next milestone is native vector search support:
 
-- [ ] **FLOAT column type** — native fixed-precision float storage for embedding vectors
 - [ ] **HNSW vector index** — Hierarchical Navigable Small World graph index for approximate nearest-neighbor search, integrated into the existing indexing infrastructure and crash-recoverable through the WAL
 - [ ] **Hybrid relational + vector queries** — single-pass execution plan combining a WHERE predicate filter with `ORDER BY embedding <-> ? LIMIT k` vector distance ordering
 
@@ -318,8 +317,6 @@ Once these land, the target use case becomes concrete: a local RAG application w
 
 Further out:
 
-
-- [ ] FLOAT, BOOLEAN column types
 - [ ] WAL checkpointing and log truncation
 - [ ] MVCC for reader/writer non-blocking concurrency
 - [ ] Cost-based query planner
