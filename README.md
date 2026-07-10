@@ -67,6 +67,9 @@ venom-db maintains in-memory B-Tree indexes for accelerated lookups. The executo
 
 Indexes are registered in the catalog and rebuilt from heap pages on every startup, since the index lives in memory and the WAL-recovered heap pages are the source of truth.
 
+### FLOAT Column Type
+Native `64`-bit floating-point storage for numeric data requiring decimal precision. Columns declared as FLOAT store values as IEEE 754 f64, serialized directly into slotted pages as 8-byte little-endian encoding. `FLOAT` values survive WAL recovery and catalog restarts identically to `INT` and `TEXT` columns. The executor handles cross-type comparisons between `FLOAT` and `INT` transparently, casting integers to f64 at evaluation time. ORDER BY correctly sorts float columns, and NaN values are treated as less than all other values to guarantee a stable sort order.
+
 ```sql
 -- This uses the B-Tree index on `id` automatically
 SELECT * FROM users WHERE id = 42;
@@ -292,8 +295,12 @@ venom-db ships with a comprehensive test suite covering every layer of the engin
 - **WAL & Recovery**: log serialization roundtrip, commit survives restart, multiple commits, uncommitted transaction rollback, UPDATE redo on restart, UPDATE undo on incomplete transaction, multiple updates undone in reverse order, mixed committed and crashed transaction replay
 - **SQL Frontend**: lexer tokenization for SELECT, string literals, operators; parser correctness for CREATE, INSERT, UPDATE, DELETE, SELECT with WHERE, ORDER BY (ASC/DESC), LIMIT
 - **Execution Engine**: index equality and range lookup, index maintained on UPDATE and DELETE, sequential scan fallback when no index, ORDER BY (ASC, DESC, text, with/without WHERE, with/without LIMIT), LIMIT, NULL insert and select, IS NULL / IS NOT NULL, NULL equality semantics, primary key enforcement (duplicate rejection, NULL rejection, unique inserts, auto-index), UPDATE (basic, multi-column, no WHERE, no matching rows, text shrink, rollback after crash, buffer pool pressure survival), multi-restart correctness, schema/index/data/delete persistence across restarts
+- **FLOAT type**: insert and select float values, ORDER BY on float columns,
+  WHERE filter with float predicates, float survival across WAL recovery,
+  mixed float and NULL columns
 
-**87 tests passing.**
+**92 tests passing.**
+
 
 ---
 
