@@ -690,5 +690,124 @@ mod tests {
             avg_recall * 100.0
         );
     }
+    #[test]
+    fn test_recall_euclidean() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        let mut build_rng = StdRng::seed_from_u64(42);
+        let mut query_rng = StdRng::seed_from_u64(99);
+        let config = HnswConfig::default();
+        let metric = DistanceMetric::Euclidean;
+        let dims = 32;
+        let n = 500;
+        let k = 10;
+
+        let mut vectors: Vec<Vec<f64>> = Vec::new();
+        let mut graph = HnswGraph::new(dims, config);
+
+        for i in 0..n {
+            let data: Vec<f64> = (0..dims).map(|_| build_rng.r#gen::<f64>()).collect();
+            vectors.push(data.clone());
+            graph.insert(i as u32, Vector::new(data), &metric);
+        }
+
+        let mut total_recall = 0.0;
+        for _ in 0..10 {
+            let qd: Vec<f64> = (0..dims).map(|_| query_rng.r#gen::<f64>()).collect();
+            let query = Vector::new(qd.clone());
+
+            let mut bf: Vec<(u32, f64)> = vectors.iter().enumerate()
+                .map(|(i, v)| (i as u32, metric.compute(&qd, v))).collect();
+            bf.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            let truth: HashSet<u32> = bf.iter().take(k).map(|(id, _)| *id).collect();
+
+            let hnsw: HashSet<u32> = graph.search(&query, k, &metric)
+                .iter().map(|(id, _)| *id).collect();
+            total_recall += truth.intersection(&hnsw).count() as f64 / k as f64;
+        }
+        let avg = total_recall / 10.0;
+        assert!(avg >= 0.90, "euclidean recall {:.1}% < 90%", avg * 100.0);
+    }
+
+    #[test]
+    fn test_recall_high_dim() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        let mut build_rng = StdRng::seed_from_u64(42);
+        let mut query_rng = StdRng::seed_from_u64(99);
+        let config = HnswConfig::default();
+        let metric = DistanceMetric::Cosine;
+        let dims = 128;
+        let n = 300;
+        let k = 10;
+
+        let mut vectors: Vec<Vec<f64>> = Vec::new();
+        let mut graph = HnswGraph::new(dims, config);
+
+        for i in 0..n {
+            let data: Vec<f64> = (0..dims).map(|_| build_rng.r#gen::<f64>()).collect();
+            vectors.push(data.clone());
+            graph.insert(i as u32, Vector::new(data), &metric);
+        }
+
+        let mut total_recall = 0.0;
+        for _ in 0..10 {
+            let qd: Vec<f64> = (0..dims).map(|_| query_rng.r#gen::<f64>()).collect();
+            let query = Vector::new(qd.clone());
+
+            let mut bf: Vec<(u32, f64)> = vectors.iter().enumerate()
+                .map(|(i, v)| (i as u32, metric.compute(&qd, v))).collect();
+            bf.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            let truth: HashSet<u32> = bf.iter().take(k).map(|(id, _)| *id).collect();
+
+            let hnsw: HashSet<u32> = graph.search(&query, k, &metric)
+                .iter().map(|(id, _)| *id).collect();
+            total_recall += truth.intersection(&hnsw).count() as f64 / k as f64;
+        }
+        let avg = total_recall / 10.0;
+        assert!(avg >= 0.85, "high-dim cosine recall {:.1}% < 85%", avg * 100.0);
+    }
+
+    #[test]
+    fn test_recall_small_dataset() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        let mut build_rng = StdRng::seed_from_u64(42);
+        let mut query_rng = StdRng::seed_from_u64(99);
+        let config = HnswConfig::default();
+        let metric = DistanceMetric::Euclidean;
+        let dims = 8;
+        let n = 50;
+        let k = 5;
+
+        let mut vectors: Vec<Vec<f64>> = Vec::new();
+        let mut graph = HnswGraph::new(dims, config);
+
+        for i in 0..n {
+            let data: Vec<f64> = (0..dims).map(|_| build_rng.r#gen::<f64>()).collect();
+            vectors.push(data.clone());
+            graph.insert(i as u32, Vector::new(data), &metric);
+        }
+
+        let mut total_recall = 0.0;
+        for _ in 0..10 {
+            let qd: Vec<f64> = (0..dims).map(|_| query_rng.r#gen::<f64>()).collect();
+            let query = Vector::new(qd.clone());
+
+            let mut bf: Vec<(u32, f64)> = vectors.iter().enumerate()
+                .map(|(i, v)| (i as u32, metric.compute(&qd, v))).collect();
+            bf.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            let truth: HashSet<u32> = bf.iter().take(k).map(|(id, _)| *id).collect();
+
+            let hnsw: HashSet<u32> = graph.search(&query, k, &metric)
+                .iter().map(|(id, _)| *id).collect();
+            total_recall += truth.intersection(&hnsw).count() as f64 / k as f64;
+        }
+        let avg = total_recall / 10.0;
+        assert!((avg - 1.0).abs() < 1e-10, "small dataset recall {:.1}% != 100%", avg * 100.0);
+    }
 }
 
