@@ -1,3 +1,4 @@
+#[derive(Debug)]
 pub enum DistanceMetric {
     Euclidean,
     Cosine,
@@ -140,5 +141,56 @@ mod tests {
         let d = DistanceMetric::default();
         let result = d.compute(&[1.0, 0.0], &[0.0, 1.0]);
         assert!((result - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cosine_distance_symmetric() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        use rand::Rng;
+
+        let mut rng = StdRng::seed_from_u64(77);
+        let dims = 16;
+        let a: Vec<f64> = (0..dims).map(|_| rng.r#gen::<f64>() * 2.0 - 1.0).collect();
+        let b: Vec<f64> = (0..dims).map(|_| rng.r#gen::<f64>() * 2.0 - 1.0).collect();
+
+        let metrics = [
+            DistanceMetric::Euclidean,
+            DistanceMetric::Cosine,
+            DistanceMetric::DotProduct,
+        ];
+
+        for m in &metrics {
+            let ab = m.compute(&a, &b);
+            let ba = m.compute(&b, &a);
+            assert!(
+                (ab - ba).abs() < 1e-10,
+                "asymmetry in {:?}: compute(a,b)={} != compute(b,a)={}", m, ab, ba
+            );
+        }
+    }
+
+    #[test]
+    fn test_euclidean_triangle_inequality() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        use rand::Rng;
+
+        let mut rng = StdRng::seed_from_u64(88);
+        let dims = 8;
+        let a: Vec<f64> = (0..dims).map(|_| rng.r#gen::<f64>()).collect();
+        let b: Vec<f64> = (0..dims).map(|_| rng.r#gen::<f64>()).collect();
+        let c: Vec<f64> = (0..dims).map(|_| rng.r#gen::<f64>()).collect();
+
+        let d = DistanceMetric::Euclidean;
+        let ac = d.compute(&a, &c);
+        let ab = d.compute(&a, &b);
+        let bc = d.compute(&b, &c);
+
+        assert!(
+            ac <= ab + bc + 1e-10,
+            "triangle inequality violated: d(a,c)={} > d(a,b)+d(b,c)={}",
+            ac, ab + bc
+        );
     }
 }
