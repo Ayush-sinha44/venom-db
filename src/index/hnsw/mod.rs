@@ -3,6 +3,8 @@ pub mod distance;
 use std::collections::HashSet;
 use distance::DistanceMetric;
 use rand::Rng;
+use rand::rngs::StdRng;
+use std::cell::RefCell;
 
 pub struct HnswConfig {
     pub m: usize,
@@ -75,6 +77,7 @@ pub struct HnswGraph {
     pub entry_point: Option<u32>,
     pub max_layer: usize,
     pub dims: usize,
+    rng: RefCell<Option<StdRng>>,
 }
 
 pub fn select_neighbors(candidates: &[(u32, f64)], m: usize) -> Vec<u32> {
@@ -89,6 +92,19 @@ impl HnswGraph {
             entry_point: None,
             max_layer: 0,
             dims,
+            rng: RefCell::new(None),
+        }
+    }
+
+    pub fn new_with_seed(dims: usize, config: HnswConfig, seed: u64) -> Self {
+        use rand::SeedableRng;
+        Self {
+            config,
+            nodes: Vec::new(),
+            entry_point: None,
+            max_layer: 0,
+            dims,
+            rng: RefCell::new(Some(StdRng::seed_from_u64(seed))),
         }
     }
 
@@ -109,8 +125,14 @@ impl HnswGraph {
     }
 
     fn random_level(&self) -> usize {
-        let mut rng = rand::thread_rng();
-        let r: f64 = rng.r#gen();
+        let r: f64 = {
+            let mut borrowed = self.rng.borrow_mut();
+            if let Some(ref mut seeded) = *borrowed {
+                seeded.r#gen()
+            } else {
+                rand::thread_rng().r#gen()
+            }
+        };
         (-r.ln() * self.config.ml).floor() as usize
     }
 
@@ -920,5 +942,92 @@ mod tests {
             "BFS from entry reached {} of 100 nodes", visited.len()
         );
     }
+
+    #[test]
+    fn test_search_deterministic() {
+        let metric = DistanceMetric::Euclidean;
+        let dims = 8;
+        let n = 100;
+
+        let build = |seed: u64| -> HnswGraph {
+            use rand::SeedableRng;
+            use rand::rngs::StdRng;
+            let mut rng = StdRng::seed_from_u64(seed);
+            let config = HnswConfig::new(8, 64, 32);
+            let mut graph = HnswGraph::new_with_seed(dims, config, 555);
+            for i in 0..n {
+                let data: Vec<f64> = (0..dims).map(|_| rng.r#gen::<f64>()).collect();
+                graph.insert(i as u32, Vector::new(data), &metric);
+            }
+            graph
+        };
+
+        let graph = build(42);
+        let query = Vector::new(vec![0.5; dims]);
+
+        let r1 = graph.search(&query, 10, &metric);
+        let r2 = graph.search(&query, 10, &metric);
+
+        assert_eq!(r1.len(), r2.len());
+        for (a, b) in r1.iter().zip(r2.iter()) {
+            assert_eq!(a.0, b.0);
+            assert!((a.1 - b.1).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_higher_ef_search_improves_recall() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        let metric = DistanceMetric::Euclidean;
+        let dims = 16;
+        let n = 300;
+        let k = 10;
+
+        let mut data_rng = StdRng::seed_from_u64(42);
+        let config = HnswConfig::new(16, 200, 10);
+        let mut graph = HnswGraph::new_with_seed(dims, config, 777);
+
+        let mut vectors: Vec<Vec<f64>> = Vec::new();
+        for i in 0..n {
+            let data: Vec<f64> = (0..dims).map(|_| data_rng.r#gen::<f64>()).collect();
+            vectors.push(data.clone());
+            graph.insert(i as u32, Vector::new(data), &metric);
+        }
+
+        let num_queries = 10;
+
+        let recall_at = |g: &HnswGraph, ef: usize| -> f64 {
+            let mut qr = StdRng::seed_from_u64(99);
+            let mut total = 0.0;
+            for _ in 0..num_queries {
+                let qd: Vec<f64> = (0..dims).map(|_| qr.r#gen::<f64>()).collect();
+                let query = Vector::new(qd.clone());
+
+                let mut bf: Vec<(u32, f64)> = vectors.iter().enumerate()
+                    .map(|(i, v)| (i as u32, metric.compute(&qd, v))).collect();
+                bf.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                let truth: HashSet<u32> = bf.iter().take(k).map(|(id, _)| *id).collect();
+
+                let results = g.search_layer(
+                    &query, &[g.entry_point.unwrap()], ef, 0, &metric
+                );
+                let hnsw: HashSet<u32> = results.iter().take(k).map(|(id, _)| *id).collect();
+                total += truth.intersection(&hnsw).count() as f64 / k as f64;
+            }
+            total / num_queries as f64
+        };
+
+        let recall_low = recall_at(&graph, 10);
+        let recall_high = recall_at(&graph, 100);
+
+        assert!(
+            recall_high >= recall_low,
+            "ef=100 recall {:.1}% should be >= ef=10 recall {:.1}%",
+            recall_high * 100.0, recall_low * 100.0
+        );
+    }
 }
+
 
