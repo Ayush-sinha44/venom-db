@@ -809,5 +809,116 @@ mod tests {
         let avg = total_recall / 10.0;
         assert!((avg - 1.0).abs() < 1e-10, "small dataset recall {:.1}% != 100%", avg * 100.0);
     }
+
+    #[test]
+    fn test_search_returns_empty_when_k_is_zero() {
+        let config = HnswConfig::new(4, 50, 50);
+        let mut graph = HnswGraph::new(2, config);
+        let metric = DistanceMetric::Euclidean;
+        graph.insert(0, Vector::new(vec![1.0, 2.0]), &metric);
+        let results = graph.search(&Vector::new(vec![0.0, 0.0]), 0, &metric);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_insert_single_dimension_vectors() {
+        let config = HnswConfig::new(4, 50, 50);
+        let mut graph = HnswGraph::new(1, config);
+        let metric = DistanceMetric::Euclidean;
+        for i in 0..10 {
+            graph.insert(i, Vector::new(vec![i as f64 * 10.0]), &metric);
+        }
+        let results = graph.search(&Vector::new(vec![25.0]), 1, &metric);
+        assert_eq!(results.len(), 1);
+        let nearest_id = results[0].0;
+        let nearest_val = graph.get_node(nearest_id).unwrap().vector.data[0];
+        assert!((nearest_val - 20.0).abs() < 1e-10 || (nearest_val - 30.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_insert_high_cardinality() {
+        let config = HnswConfig::new(8, 64, 32);
+        let mut graph = HnswGraph::new(4, config);
+        let metric = DistanceMetric::Euclidean;
+        for i in 0..1000 {
+            let v = vec![
+                (i % 100) as f64,
+                (i / 100) as f64,
+                (i % 37) as f64,
+                (i % 13) as f64,
+            ];
+            graph.insert(i, Vector::new(v), &metric);
+        }
+        assert_eq!(graph.len(), 1000);
+        let ep = graph.entry_point.unwrap();
+        assert!(graph.get_node(ep).is_some());
+    }
+
+    #[test]
+    fn test_search_after_many_inserts_entry_point_valid() {
+        let config = HnswConfig::default();
+        let mut graph = HnswGraph::new(2, config);
+        let metric = DistanceMetric::Euclidean;
+        for i in 0..200 {
+            graph.insert(i, Vector::new(vec![i as f64, 0.0]), &metric);
+        }
+        let ep = graph.entry_point.unwrap();
+        assert!(graph.get_node(ep).is_some());
+    }
+
+    #[test]
+    fn test_neighbor_lists_never_exceed_m_at_any_layer() {
+        let config = HnswConfig::default();
+        let mut graph = HnswGraph::new(3, config);
+        let metric = DistanceMetric::Euclidean;
+        for i in 0..200 {
+            graph.insert(i, Vector::new(vec![i as f64, 0.0, 0.0]), &metric);
+        }
+        for node in &graph.nodes {
+            for (li, neighbors) in node.layers.iter().enumerate() {
+                let limit = if li == 0 { graph.config.m_max } else { graph.config.m };
+                assert!(
+                    neighbors.len() <= limit,
+                    "node {} layer {} has {} neighbors, max {}",
+                    node.id, li, neighbors.len(), limit
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_all_inserted_nodes_reachable_from_entry() {
+        use std::collections::VecDeque;
+
+        let config = HnswConfig::new(8, 64, 32);
+        let mut graph = HnswGraph::new(3, config);
+        let metric = DistanceMetric::Euclidean;
+        for i in 0..100 {
+            graph.insert(i, Vector::new(vec![i as f64, 0.0, 0.0]), &metric);
+        }
+
+        let ep = graph.entry_point.unwrap();
+        let mut visited: HashSet<u32> = HashSet::new();
+        let mut queue: VecDeque<u32> = VecDeque::new();
+        visited.insert(ep);
+        queue.push_back(ep);
+
+        while let Some(nid) = queue.pop_front() {
+            if let Some(node) = graph.get_node(nid) {
+                if !node.layers.is_empty() {
+                    for &neighbor in &node.layers[0] {
+                        if visited.insert(neighbor) {
+                            queue.push_back(neighbor);
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            visited.len(), 100,
+            "BFS from entry reached {} of 100 nodes", visited.len()
+        );
+    }
 }
 
