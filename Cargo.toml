@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 crc32fast = "1"   #this is for page checksums
-rand = "0.8"
+rand = "0.8" # used for random level generation during HNSW node insert (Algorithm 1)
