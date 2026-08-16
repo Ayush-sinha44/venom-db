@@ -62,7 +62,28 @@ impl HnswConfig {
 
     /// Returns the default HNSW configuration for general-purpose workloads.
     pub fn default() -> Self {
-        Self::new(16, 200, 50)
+        Self::new(
+            // M=16: The maximum number of neighbors per node.
+            // 16 is a good balance for small-to-medium local datasets with 128-384 dimensional text embeddings.
+            // Increase to 32 or 48 for higher recall on hard datasets, at the cost of higher memory and slower build/search.
+            16, 
+            // ef_construction=200: Size of candidate list during insertion.
+            // 200 is high enough to produce good quality graphs without making index builds intolerably slow.
+            // Increase to 400+ for marginal recall gains at a steep build time cost.
+            200, 
+            // ef_search=50: Size of candidate list during search.
+            // 50 provides fast sub-millisecond queries for local RAG workloads with great recall.
+            // Increase up to 100-200 if higher recall is needed, at the cost of slower queries.
+            50,
+        )
+    }
+
+    /// Returns a configuration optimized for small datasets (under 1000 vectors).
+    ///
+    /// Use this when memory is extremely constrained or when building an index for a tiny dataset
+    /// where large candidate lists provide no benefit.
+    pub fn for_small_dataset() -> Self {
+        Self::new(8, 100, 20)
     }
 }
 
