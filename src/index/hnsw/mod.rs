@@ -34,6 +34,7 @@ use rand::Rng;
 use rand::rngs::StdRng;
 use std::cell::RefCell;
 
+/// Configuration parameters for building and querying the HNSW index.
 pub struct HnswConfig {
     pub m: usize,
     pub m_max: usize,
@@ -43,6 +44,12 @@ pub struct HnswConfig {
 }
 
 impl HnswConfig {
+    /// Creates a new HNSW configuration with specific parameters.
+    ///
+    /// # Parameters
+    /// - `m`: The maximum number of outgoing connections in the graph (except for layer 0 which is `2 * m`).
+    /// - `ef_construction`: The size of the dynamic candidate list when inserting a new element.
+    /// - `ef_search`: The size of the dynamic candidate list when searching the graph.
     pub fn new(m: usize, ef_construction: usize, ef_search: usize) -> Self {
         Self {
             m,
@@ -53,26 +60,34 @@ impl HnswConfig {
         }
     }
 
+    /// Returns the default HNSW configuration for general-purpose workloads.
     pub fn default() -> Self {
         Self::new(16, 200, 50)
     }
 }
 
+/// Represents a fixed-dimension vector embedding.
 pub struct Vector {
     pub dims: usize,
     pub data: Vec<f64>,
 }
 
 impl Vector {
+    /// Creates a new Vector from a data payload.
+    ///
+    /// # Parameters
+    /// - `data`: The underlying floating point vector values.
     pub fn new(data: Vec<f64>) -> Self {
         let dims = data.len();
         Self { dims, data }
     }
 
+    /// Returns the dimensionality of this vector.
     pub fn dims(&self) -> usize {
         self.dims
     }
 
+    /// Returns the underlying vector data as a slice for efficient distance calculations.
     pub fn as_slice(&self) -> &[f64] {
         &self.data
     }
@@ -93,12 +108,16 @@ impl Clone for Vector {
     }
 }
 
+/// Represents a single vertex in the HNSW graph.
+///
+/// Contains the underlying vector data and a layered list of neighbor connections.
 pub struct HnswNode {
     pub id: u32,
     pub vector: Vector,
     pub layers: Vec<Vec<u32>>,
 }
 
+/// The primary HNSW graph structure that holds all nodes and index metadata.
 pub struct HnswGraph {
     pub config: HnswConfig,
     pub nodes: Vec<HnswNode>,
@@ -108,11 +127,24 @@ pub struct HnswGraph {
     rng: RefCell<Option<StdRng>>,
 }
 
+/// Selects the `m` closest neighbors from a list of candidates.
+///
+/// Implements the naive neighbor selection from Algorithm 3 of Malkov & Yashunin (2016).
+/// Returns a vector of node IDs truncated to `m` elements.
+///
+/// # Parameters
+/// - `candidates`: A slice of tuples containing `(node_id, distance)` sorted by distance.
+/// - `m`: The maximum number of neighbors to return.
 pub fn select_neighbors(candidates: &[(u32, f64)], m: usize) -> Vec<u32> {
     candidates.iter().take(m).map(|(id, _)| *id).collect()
 }
 
 impl HnswGraph {
+    /// Creates a new, empty HNSW graph.
+    ///
+    /// # Parameters
+    /// - `dims`: The dimensionality of the vectors this graph will store.
+    /// - `config`: The HNSW configuration parameters.
     pub fn new(dims: usize, config: HnswConfig) -> Self {
         Self {
             config,
@@ -124,6 +156,12 @@ impl HnswGraph {
         }
     }
 
+    /// Creates a new HNSW graph using a seeded random number generator for deterministic builds.
+    ///
+    /// # Parameters
+    /// - `dims`: The dimensionality of the vectors this graph will store.
+    /// - `config`: The HNSW configuration parameters.
+    /// - `seed`: The seed for the RNG.
     pub fn new_with_seed(dims: usize, config: HnswConfig, seed: u64) -> Self {
         use rand::SeedableRng;
         Self {
@@ -136,14 +174,20 @@ impl HnswGraph {
         }
     }
 
+    /// Returns the number of nodes currently in the graph.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
+    /// Returns true if the graph contains zero nodes.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
 
+    /// Retrieves a reference to a node by its ID.
+    ///
+    /// # Parameters
+    /// - `id`: The unique identifier of the node to retrieve.
     pub fn get_node(&self, id: u32) -> Option<&HnswNode> {
         self.nodes.iter().find(|n| n.id == id)
     }
@@ -164,6 +208,17 @@ impl HnswGraph {
         (-r.ln() * self.config.ml).floor() as usize
     }
 
+    /// Performs a greedy beam search on a single layer of the HNSW graph.
+    ///
+    /// Implements Algorithm 2 from Malkov & Yashunin (2016).
+    /// Returns a list of the `ef` closest nodes found in the specified layer.
+    ///
+    /// # Parameters
+    /// - `query`: The vector to search for.
+    /// - `entry_points`: Node IDs to begin the search from.
+    /// - `ef`: The size of the dynamic candidate list (controls search quality).
+    /// - `layer`: The graph layer to search within.
+    /// - `metric`: The distance metric to evaluate vector similarity.
     pub fn search_layer(
         &self,
         query: &Vector,
@@ -241,6 +296,14 @@ impl HnswGraph {
         results
     }
 
+    /// Inserts a new node into the HNSW graph.
+    ///
+    /// Implements Algorithm 1 from Malkov & Yashunin (2016).
+    ///
+    /// # Parameters
+    /// - `id`: The unique identifier for the new node.
+    /// - `vector`: The vector embedding data.
+    /// - `metric`: The distance metric used for neighbor selection.
     pub fn insert(&mut self, id: u32, vector: Vector, metric: &DistanceMetric) {
         let node_level = self.random_level();
 
@@ -353,6 +416,15 @@ impl HnswGraph {
         }
     }
 
+    /// Searches the HNSW graph for the `k` nearest neighbors to a query vector.
+    ///
+    /// Implements Algorithm 5 from Malkov & Yashunin (2016).
+    /// Returns a vector of tuples containing `(node_id, distance)` sorted from closest to furthest.
+    ///
+    /// # Parameters
+    /// - `query`: The target vector to find neighbors for.
+    /// - `k`: The number of nearest neighbors to return.
+    /// - `metric`: The distance metric used to evaluate vector similarity.
     pub fn search(&self, query: &Vector, k: usize, metric: &DistanceMetric) -> Vec<(u32, f64)> {
         if self.nodes.is_empty() {
             return Vec::new();

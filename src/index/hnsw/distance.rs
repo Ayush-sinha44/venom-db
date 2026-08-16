@@ -1,3 +1,6 @@
+/// Defines the distance metrics available for vector comparisons in the HNSW index.
+///
+/// Implements standard distance measures required by approximate nearest neighbor algorithms.
 #[derive(Debug)]
 pub enum DistanceMetric {
     Euclidean,
@@ -6,6 +9,14 @@ pub enum DistanceMetric {
 }
 
 impl DistanceMetric {
+    /// Computes the exact distance between two vectors according to the selected metric.
+    ///
+    /// # Parameters
+    /// - `a`: The first vector slice to compare.
+    /// - `b`: The second vector slice to compare.
+    ///
+    /// # Invariants
+    /// The caller must ensure that slices `a` and `b` have exactly the same length. Panics otherwise.
     pub fn compute(&self, a: &[f64], b: &[f64]) -> f64 {
         assert_eq!(a.len(), b.len(), "vector dimension mismatch");
         match self {
@@ -38,6 +49,17 @@ impl DistanceMetric {
         }
     }
 
+    /// Computes the squared Euclidean distance without calculating the final square root.
+    ///
+    /// This is used internally to avoid the computational cost of the `sqrt` operation when
+    /// relative distance ordering is sufficient.
+    ///
+    /// # Parameters
+    /// - `a`: The first vector slice to compare.
+    /// - `b`: The second vector slice to compare.
+    ///
+    /// # Invariants
+    /// The caller must ensure that slices `a` and `b` have exactly the same length. Panics otherwise.
     pub fn compute_squared(&self, a: &[f64], b: &[f64]) -> f64 {
         assert_eq!(a.len(), b.len(), "vector dimension mismatch");
         let mut sum = 0.0;
@@ -48,8 +70,10 @@ impl DistanceMetric {
         sum
     }
 
-    // Cosine is the standard metric for text embeddings from language models,
-    // which is the primary use case for venom-db's RAG target workload.
+    /// Returns the default distance metric for new HNSW graphs.
+    ///
+    /// Cosine distance is used as the default since it's the standard metric for text embeddings
+    /// from language models, the primary use case for venom-db's RAG target workload.
     pub fn default() -> Self {
         DistanceMetric::Cosine
     }
