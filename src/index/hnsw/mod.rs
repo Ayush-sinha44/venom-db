@@ -138,6 +138,13 @@ pub struct HnswNode {
     pub layers: Vec<Vec<u32>>,
 }
 
+pub struct HnswStats {
+    pub num_nodes: usize,
+    pub max_layer: usize,
+    pub avg_neighbors_layer0: f64,
+    pub entry_point: Option<u32>,
+}
+
 /// The primary HNSW graph structure that holds all nodes and index metadata.
 pub struct HnswGraph {
     pub config: HnswConfig,
@@ -203,6 +210,25 @@ impl HnswGraph {
     /// Returns true if the graph contains zero nodes.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    pub fn stats(&self) -> HnswStats {
+        let num_nodes = self.nodes.len();
+        let avg_neighbors_layer0 = if num_nodes == 0 {
+            0.0
+        } else {
+            let total: usize = self.nodes.iter()
+                .map(|n| n.layers.first().map_or(0, |l| l.len()))
+                .sum();
+            total as f64 / num_nodes as f64
+        };
+
+        HnswStats {
+            num_nodes,
+            max_layer: self.max_layer,
+            avg_neighbors_layer0,
+            entry_point: self.entry_point,
+        }
     }
 
     /// Retrieves a reference to a node by its ID.
@@ -1148,6 +1174,23 @@ mod tests {
             "ef=100 recall {:.1}% should be >= ef=10 recall {:.1}%",
             recall_high * 100.0, recall_low * 100.0
         );
+    }
+
+    #[test]
+    fn test_stats_after_100_inserts() {
+        let mut graph = HnswGraph::new(8, HnswConfig::default());
+        let metric = DistanceMetric::Euclidean;
+
+        for i in 0..100 {
+            let vec = Vector::new(vec![i as f64; 8]);
+            graph.insert(i as u32, vec, &metric);
+        }
+
+        let stats = graph.stats();
+        assert_eq!(stats.num_nodes, 100);
+        assert!(stats.max_layer >= 1);
+        assert!(stats.avg_neighbors_layer0 > 0.0);
+        assert!(stats.entry_point.is_some());
     }
 }
 
