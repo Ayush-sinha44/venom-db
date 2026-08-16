@@ -274,9 +274,9 @@ impl HnswGraph {
         layer: usize,
         metric: &DistanceMetric,
     ) -> Vec<(u32, f64)> {
-        let mut visited: HashSet<u32> = HashSet::new();
-        let mut candidates: Vec<(u32, f64)> = Vec::new();
-        let mut results: Vec<(u32, f64)> = Vec::new();
+        let mut visited: HashSet<u32> = HashSet::new(); // visited: set of evaluated nodes (paper notation: v)
+        let mut candidates: Vec<(u32, f64)> = Vec::new(); // candidates: dynamic candidate set (paper notation: C)
+        let mut results: Vec<(u32, f64)> = Vec::new(); // results: found nearest neighbors (paper notation: W)
 
         for &ep_id in entry_points {
             if visited.contains(&ep_id) {
@@ -352,7 +352,7 @@ impl HnswGraph {
     /// - `vector`: The vector embedding data.
     /// - `metric`: The distance metric used for neighbor selection.
     pub fn insert(&mut self, id: u32, vector: Vector, metric: &DistanceMetric) {
-        let node_level = self.random_level();
+        let node_level = self.random_level(); // node_level: the top layer for the new node (paper notation: l)
 
         if self.nodes.is_empty() {
             let layers = (0..=node_level).map(|_| Vec::new()).collect();
@@ -362,7 +362,7 @@ impl HnswGraph {
             return;
         }
 
-        let mut ep_id = self.entry_point.unwrap();
+        let mut ep_id = self.entry_point.unwrap(); // ep_id: entry point node id (paper notation: ep)
         let query_vec = vector.clone();
 
         for layer in (node_level + 1..=self.max_layer).rev() {
@@ -477,7 +477,7 @@ impl HnswGraph {
             return Vec::new();
         }
 
-        let mut ep_id = self.entry_point.unwrap();
+        let mut ep_id = self.entry_point.unwrap(); // ep_id: entry point node id (paper notation: ep)
 
         for layer in (1..=self.max_layer).rev() {
             let results = self.search_layer(query, &[ep_id], 1, layer, metric);
