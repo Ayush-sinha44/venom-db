@@ -1,3 +1,31 @@
+//! Hierarchical Navigable Small World (HNSW) graph index.
+//!
+//! HNSW is a fast and accurate algorithm for approximate nearest neighbor search in high-dimensional
+//! vector spaces. It builds a multi-layered graph where the bottom layer contains all vectors and
+//! higher layers act as "expressways" for fast routing. Search greedily descends from the top layer
+//! to find the closest matches.
+//!
+//! # Citation
+//! Implements: Malkov, Y.A. & Yashunin, D.A. (2016). "Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs"
+//!
+//! # Parameters
+//! - `M`: The maximum number of bidirectional links (neighbors) created for every new element during insertion.
+//!   Increasing `M` improves recall but increases memory consumption and index build time.
+//! - `ef_construction`: The size of the dynamic candidate list used when searching during insertion.
+//!   Increasing this improves the quality of the graph (higher recall) at the cost of longer build times.
+//! - `ef_search`: The size of the dynamic candidate list used during search queries.
+//!   Increasing this improves recall at the cost of slower query response times.
+//!
+//! # Distance Metric
+//! The default distance metric is Cosine distance. This is optimized for text embeddings from
+//! language models, which is the primary target for venom-db's RAG (Retrieval-Augmented Generation) use case.
+//!
+//! # Week 2 Integration Notes
+//! The integration layer needs to plug in:
+//! - Row id mapping to venom-db `Rid` structs (currently nodes just have `u32` ids).
+//! - WAL hooks on every insert to ensure persistence and crash recovery.
+//! - Catalog persistence of index metadata (table name, column name, M, ef params, dims).
+
 pub mod distance;
 
 use std::collections::HashSet;
