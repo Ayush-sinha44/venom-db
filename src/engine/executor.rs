@@ -129,20 +129,17 @@ impl Executor {
                             let tuple_bytes = self.buffer_pool.get_page(frame_id)
                                 .and_then(|p| p.get_tuple(slot_id)).map(|b| b.to_vec());
                                 
-                            if let Some(tuple) = tuple_bytes {
-                                if let Ok(row) = schema.deserialize_row(&tuple) {
+                            if let Some(tuple) = tuple_bytes
+                                && let Ok(row) = schema.deserialize_row(&tuple) {
                                     for col in &schema.columns {
-                                        if self.index_manager.has_index(table_name, &col.name) {
-                                            if let Ok(col_idx) = schema.col_index(&col.name).ok_or(()) {
-                                                if let Value::Int(key) = &row[col_idx] {
+                                        if self.index_manager.has_index(table_name, &col.name)
+                                            && let Ok(col_idx) = schema.col_index(&col.name).ok_or(())
+                                                && let Value::Int(key) = &row[col_idx] {
                                                     let rid = crate::index::node::Rid { page_id, slot_id };
                                                     self.index_manager.insert(table_name, &col.name, *key, rid);
                                                 }
-                                            }
-                                        }
                                     }
                                 }
-                            }
                         }
                         self.buffer_pool.unpin(frame_id, false);
                     }
@@ -231,13 +228,12 @@ impl Executor {
             }
 
             // Duplicate check via index
-            if let Value::Int(key) = pk_val {
-                if self.index_manager.search(&table, pk_col_name, *key).is_some() {
+            if let Value::Int(key) = pk_val
+                && self.index_manager.search(&table, pk_col_name, *key).is_some() {
                     return Err(format!(
                         "duplicate primary key: {} = {}", pk_col_name, key
                     ));
                 }
-            }
         }
 
         let row_bytes = schema.serialize_row(&values)?;
@@ -284,7 +280,7 @@ impl Executor {
                     .unwrap_or(0);
                 self.buffer_pool.unpin(frame_id, true);
                 inserted_page_id = Some(page_id);
-                inserted_slot_id = Some(slot_id as u16);
+                inserted_slot_id = Some(slot_id);
                 break;
             }
             self.buffer_pool.unpin(frame_id, false);
@@ -319,18 +315,17 @@ impl Executor {
                 .map_err(|e| format!("table meta save: {}", e))?;
 
             inserted_page_id = Some(page_id);
-            inserted_slot_id = Some(slot_id as u16);
+            inserted_slot_id = Some(slot_id);
         }
 
         // Maintain indexes: for each indexed column, insert (value, Rid)
         if let (Some(page_id), Some(slot_id)) = (inserted_page_id, inserted_slot_id) {
             let rid = Rid { page_id, slot_id };
             for (col_idx, col) in schema.columns.iter().enumerate() {
-                if self.index_manager.has_index(&table, &col.name) {
-                    if let Value::Int(key) = &values[col_idx] {
+                if self.index_manager.has_index(&table, &col.name)
+                    && let Value::Int(key) = &values[col_idx] {
                         self.index_manager.insert(&table, &col.name, *key, rid);
                     }
-                }
             }
         }
 
@@ -407,11 +402,10 @@ impl Executor {
 
                     let row = schema.deserialize_row(&tuple)?;
 
-                    if let Some(ref expr) = filter {
-                        if !Self::eval_filter(&schema, &row, expr)? {
+                    if let Some(ref expr) = filter
+                        && !Self::eval_filter(&schema, &row, expr)? {
                             continue;
                         }
-                    }
 
                     let projected = Self::project(&schema, row, &columns)?;
                     results.push(projected);
@@ -624,11 +618,10 @@ impl Executor {
 
                     // Remove from indexes
                     for (col_idx, col) in schema.columns.iter().enumerate() {
-                        if self.index_manager.has_index(&table, &col.name) {
-                            if let Value::Int(key) = &row[col_idx] {
+                        if self.index_manager.has_index(&table, &col.name)
+                            && let Value::Int(key) = &row[col_idx] {
                                 self.index_manager.delete(&table, &col.name, *key);
                             }
-                        }
                     }
 
                     page_dirty = true;
@@ -736,13 +729,12 @@ impl Executor {
                             // Reject duplicate (if new value differs from old)
                             if let Value::Int(new_key) = &assignment.value {
                                 let old_matches = matches!(&old_row[schema.pk_col_index().unwrap()], Value::Int(old_k) if old_k == new_key);
-                                if !old_matches {
-                                    if self.index_manager.search(&table, pk_col_name, *new_key).is_some() {
+                                if !old_matches
+                                    && self.index_manager.search(&table, pk_col_name, *new_key).is_some() {
                                         return Err(format!(
                                             "duplicate primary key: {} = {}", pk_col_name, new_key
                                         ));
                                     }
-                                }
                             }
                         }
                     }
@@ -791,14 +783,12 @@ impl Executor {
                     self.wal
                         .abort(txn_id)
                         .map_err(|e| format!("wal abort: {}", e))?;
-                    return Err(format!(
-                        "UPDATE failed: new value for row is larger than original \
-         (in-place update only supported for same-size or smaller values)"
-                    ));
+                    return Err("UPDATE failed: new value for row is larger than original \
+         (in-place update only supported for same-size or smaller values)".to_string());
                 }
 
                 // Maintain indexes: remove old key, insert new key
-                let rid = Rid { page_id, slot_id: slot_id as u16 };
+                let rid = Rid { page_id, slot_id };
                 for (col_idx, col) in schema.columns.iter().enumerate() {
                     if self.index_manager.has_index(&table, &col.name) {
                         if let Value::Int(old_key) = &old_row[col_idx] {

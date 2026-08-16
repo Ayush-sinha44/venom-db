@@ -88,7 +88,7 @@ impl Lexer {
                 '!' => {
                     self.advance();
                     if self.peek() == Some('=') { self.advance(); Ok(Token::Ne) }
-                    else { Err(format!("unexpected char '!'")) }
+                    else { Err("unexpected char '!'".to_string()) }
                 }
                 '\'' => self.read_string(),
                 c if c.is_ascii_digit() || c == '-' => self.read_number(),

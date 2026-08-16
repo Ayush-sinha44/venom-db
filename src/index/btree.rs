@@ -65,13 +65,12 @@ impl BTree {
     /// a future compaction pass handles underflow merges).
     pub fn delete(&mut self, key: i64) -> bool {
         let leaf_id = self.find_leaf(self.root_id, key);
-        if let Some(BTreeNode::Leaf(leaf)) = self.nodes.get_mut(&leaf_id) {
-            if let Some(idx) = leaf.find_key_index(key) {
+        if let Some(BTreeNode::Leaf(leaf)) = self.nodes.get_mut(&leaf_id)
+            && let Some(idx) = leaf.find_key_index(key) {
                 leaf.keys.remove(idx);
                 leaf.rids.remove(idx);
                 return true;
             }
-        }
         false
     }
 
@@ -82,12 +81,7 @@ impl BTree {
         // Find the leaf where `start` would live
         let mut leaf_id = self.find_leaf(self.root_id, start);
 
-        loop {
-            let node = match self.nodes.get(&leaf_id) {
-                Some(n) => n,
-                None => break,
-            };
-
+        while let Some(node) = self.nodes.get(&leaf_id) {
             if let BTreeNode::Leaf(leaf) = node {
                 for (i, &key) in leaf.keys.iter().enumerate() {
                     if key > end { return results; }

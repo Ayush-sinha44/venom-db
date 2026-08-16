@@ -22,9 +22,7 @@ impl IndexManager {
     /// No-op if the index already exists.
     pub fn create_index(&mut self, table: &str, column: &str) {
         let key = (table.to_string(), column.to_string());
-        if !self.indexes.contains_key(&key) {
-            self.indexes.insert(key, BTree::new());
-        }
+        self.indexes.entry(key).or_insert_with(BTree::new);
     }
 
     /// Check if an index exists for (table, column).

@@ -55,7 +55,7 @@ impl PageHeader {
 impl Slot {
     pub const SIZE: usize = 5;
 
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+    pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         buf[0..2].copy_from_slice(&self.offset.to_le_bytes());
         buf[2..4].copy_from_slice(&self.length.to_le_bytes());

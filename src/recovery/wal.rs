@@ -18,6 +18,7 @@ impl WalManager {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(log_path)?;
         Ok(Self {
             log_file,

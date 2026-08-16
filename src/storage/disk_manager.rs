@@ -13,6 +13,7 @@ impl DiskManager {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(path)?;
 
         let num_pages = (file.metadata()?.len() / PAGE_SIZE as u64) as u32;

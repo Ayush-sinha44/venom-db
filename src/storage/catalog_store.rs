@@ -1,16 +1,16 @@
-/// CatalogStore — persists table schemas to `catalog.bin` in the data directory.
-///
-/// Format (binary, little-endian):
-///   [num_tables: u32]
-///   for each table:
-///     [name_len: u32][name_bytes]
-///     [num_cols: u32]
-///     for each column:
-///       [col_name_len: u32][col_name_bytes]
-///       [type_tag: u8]   (0 = INT, 1 = TEXT)
-///
-/// This is intentionally simple. V2 adds a magic u32::MAX, a version byte (2),
-/// primary_key flags, and index definitions at the end.
+//! CatalogStore — persists table schemas to `catalog.bin` in the data directory.
+//!
+//! Format (binary, little-endian):
+//!   [num_tables: u32]
+//!   for each table:
+//!     [name_len: u32][name_bytes]
+//!     [num_cols: u32]
+//!     for each column:
+//!       [col_name_len: u32][col_name_bytes]
+//!       [type_tag: u8]   (0 = INT, 1 = TEXT)
+//!
+//! This is intentionally simple. V2 adds a magic u32::MAX, a version byte (2),
+//! primary_key flags, and index definitions at the end.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};

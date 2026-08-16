@@ -148,7 +148,7 @@ impl LockManager {
             if self.has_cycle(txn_id) {
                 // Remove the waiting request we just added
                 let q = self.lock_table.get_mut(&rid).unwrap();
-                q.requests.retain(|r| !(r.txn_id == txn_id && !r.granted));
+                q.requests.retain(|r| r.txn_id != txn_id || r.granted);
                 self.waits_for.remove(&txn_id);
                 return Err(format!(
                     "deadlock detected: txn {} is in a wait cycle",
@@ -241,7 +241,7 @@ impl LockManager {
 
     /// Check if a txn currently holds a lock on a rid
     pub fn holds_lock(&self, txn_id: u32, rid: Rid, mode: &LockMode) -> bool {
-        self.lock_table.get(&rid).map_or(false, |q| {
+        self.lock_table.get(&rid).is_some_and(|q| {
             q.requests.iter().any(|r| {
                 r.txn_id == txn_id
                     && r.granted

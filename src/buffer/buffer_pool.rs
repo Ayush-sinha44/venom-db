@@ -116,14 +116,13 @@ impl BufferPool {
 
     /// Flush a specific page to disk immediately.
     pub fn flush_page(&mut self, page_id: u32) -> std::io::Result<()> {
-        if let Some(&frame_id) = self.page_table.get(&page_id) {
-            if self.frames[frame_id].is_dirty {
+        if let Some(&frame_id) = self.page_table.get(&page_id)
+            && self.frames[frame_id].is_dirty {
                 if let Some(page) = self.frames[frame_id].page.as_mut() {
                     self.disk.write_page(page)?;
                 }
                 self.frames[frame_id].is_dirty = false;
             }
-        }
         Ok(())
     }
 
@@ -169,11 +168,10 @@ impl BufferPool {
         })?;
 
         // If the victim is dirty, flush it to disk before evicting
-        if self.frames[victim_id].is_dirty {
-            if let Some(page) = self.frames[victim_id].page.as_mut() {
+        if self.frames[victim_id].is_dirty
+            && let Some(page) = self.frames[victim_id].page.as_mut() {
                 self.disk.write_page(page)?;
             }
-        }
 
         // Remove from page table
         if let Some(old_page_id) = self.frames[victim_id].page.as_ref().map(|p| p.id) {

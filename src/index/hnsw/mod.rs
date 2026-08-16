@@ -394,13 +394,11 @@ impl HnswGraph {
             }
 
             for &neighbor_id in &neighbors {
-                if let Some(neighbor) = self.get_node_mut(neighbor_id) {
-                    if layer < neighbor.layers.len() {
-                        if !neighbor.layers[layer].contains(&id) {
+                if let Some(neighbor) = self.get_node_mut(neighbor_id)
+                    && layer < neighbor.layers.len()
+                        && !neighbor.layers[layer].contains(&id) {
                             neighbor.layers[layer].push(id);
                         }
-                    }
-                }
             }
 
             for &neighbor_id in &neighbors {
@@ -443,11 +441,10 @@ impl HnswGraph {
                     }
 
                     for dropped_id in dropped {
-                        if let Some(dropped_node) = self.get_node_mut(dropped_id) {
-                            if layer < dropped_node.layers.len() {
+                        if let Some(dropped_node) = self.get_node_mut(dropped_id)
+                            && layer < dropped_node.layers.len() {
                                 dropped_node.layers[layer].retain(|&nid| nid != neighbor_id);
                             }
-                        }
                     }
                 }
             }
