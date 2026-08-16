@@ -2,8 +2,8 @@
 
 > An embedded, ACID-compliant relational database engine written from scratch in Rust.
 
-![Venom-db in action](assets/readme1.png)
-![Venom-db in action](assets/readme2.png)
+![Venom-db in action](assets/demo1.png)
+![Venom-db in action](assets/demo2.png)
 
 venom-db is a relational database engine built entirely from scratch in Rust — no external storage libraries, no borrowed query engines, no shortcuts. Every layer, from the on-disk page format to the SQL parser to the Write-Ahead Log, is purpose-designed.
 
